@@ -12,6 +12,7 @@ Large data folders, model checkpoints, and generated outputs are intentionally e
 - `eval_img_text.py`: evaluate a text checkpoint on patient `.txt` files inside the image test folder.
 - `kd_mri_text.py`: MRI teacher to paired-text student KD.
 - `train_lupi.py`: large-text checkpoint to paired-text LUPI with MRI-guided CE sample weights.
+- `run_all.py`: run the full synchronized pipeline once.
 
 ## Shared Code
 
@@ -32,6 +33,7 @@ python train_mri.py --images /kaggle/input/datasets/duongb/cthsis/images
 python kd_mri_text.py --images /kaggle/input/datasets/duongb/cthsis/images
 python train_lupi.py --images /kaggle/input/datasets/duongb/cthsis/images
 python train_lupi.py --alpha-lupi 0.0 --images /kaggle/input/datasets/duongb/cthsis/images
+python run_all.py
 ```
 
 ## Synchronized Text Pipelines
@@ -85,4 +87,13 @@ python train_lupi.py \
   --images /kaggle/input/datasets/duongb/cthsis/images \
   --out /kaggle/working/large_to_paired_lupi_shuffled \
   --shuffle-teacher
+```
+
+To run everything above once with synchronized defaults:
+
+```bash
+python run_all.py \
+  --images /kaggle/input/datasets/duongb/cthsis/images \
+  --texts /kaggle/input/datasets/duongb/cthsis/texts \
+  --out-root /kaggle/working/sis_runs
 ```
