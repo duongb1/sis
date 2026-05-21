@@ -12,6 +12,7 @@ Large data folders, model checkpoints, and generated outputs are intentionally e
 - `eval_img_text.py`: evaluate a text checkpoint on patient `.txt` files inside the image test folder.
 - `kd_mri_text.py`: MRI teacher to paired-text student KD.
 - `kd_text_pair.py`: large-text teacher to paired-text student KD.
+- `train_lupi.py`: large-text checkpoint to paired-text LUPI with MRI-guided CE sample weights.
 
 ## Shared Code
 
@@ -30,4 +31,6 @@ python eval_img_text.py --images /kaggle/input/datasets/duongb/cthsis/images
 python train_mri.py --images /kaggle/input/datasets/duongb/cthsis/images
 python kd_text_pair.py --images /kaggle/input/datasets/duongb/cthsis/images
 python kd_mri_text.py --images /kaggle/input/datasets/duongb/cthsis/images
+python train_lupi.py --images /kaggle/input/datasets/duongb/cthsis/images
+python train_lupi.py --alpha-lupi 0.0 --images /kaggle/input/datasets/duongb/cthsis/images
 ```

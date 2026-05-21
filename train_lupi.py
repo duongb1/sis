@@ -17,7 +17,7 @@ from sislib.common import get_device, resolve_max_len, round_float, round_metric
 from sislib.metrics import save_preds
 from sislib.mri import MRIDataset, collect_pairs, resnet50_binary
 from sislib.text_data import TextDataset, collect_paired_text, save_records
-from sislib.text_train import eval_text
+from sislib.text_train import ce_epoch, eval_text
 
 
 def parse_args():
@@ -29,8 +29,8 @@ def parse_args():
     p.add_argument("--max-len", type=int, default=512)
     p.add_argument("--batch-text", type=int, default=16)
     p.add_argument("--batch-mri", type=int, default=64)
-    p.add_argument("--epochs", type=int, default=3)
-    p.add_argument("--lr", type=float, default=1e-5)
+    p.add_argument("--epochs", type=int, default=8)
+    p.add_argument("--lr", type=float, default=2e-5)
     p.add_argument("--wd", type=float, default=0.01)
     p.add_argument("--warmup", type=float, default=0.1)
     p.add_argument("--alpha-lupi", type=float, default=0.2)
@@ -207,28 +207,33 @@ def main():
     print(f"Image root: {image_root.resolve()}")
     print(f"Paired text patients: {len(text_records)} | Train: {len(train_rows)} | Val: {len(val_rows)} | Test: {len(test_rows)}")
 
-    teacher = load_mri_teacher(args.teacher, device, multi_gpu)
-    teacher_logits = compute_mri_logits(text_records, mri_records, teacher, device, args.batch_mri, args.workers)
-    teacher_stats = {
-        "train": round_metrics(teacher_stats_for_records(train_rows, teacher_logits, args.threshold)),
-        "val": round_metrics(teacher_stats_for_records(val_rows, teacher_logits, args.threshold)),
-        "test": round_metrics(teacher_stats_for_records(test_rows, teacher_logits, args.threshold)),
-    }
-    with open(out / "teacher_stats.json", "w", encoding="utf-8") as f:
-        json.dump(teacher_stats, f, ensure_ascii=False, indent=2)
-    del teacher
-    if device.type == "cuda":
-        torch.cuda.empty_cache()
+    use_lupi = args.alpha_lupi > 0
+    teacher_logits = None
+    if use_lupi:
+        teacher = load_mri_teacher(args.teacher, device, multi_gpu)
+        teacher_logits = compute_mri_logits(text_records, mri_records, teacher, device, args.batch_mri, args.workers)
+        teacher_stats = {
+            "train": round_metrics(teacher_stats_for_records(train_rows, teacher_logits, args.threshold)),
+            "val": round_metrics(teacher_stats_for_records(val_rows, teacher_logits, args.threshold)),
+            "test": round_metrics(teacher_stats_for_records(test_rows, teacher_logits, args.threshold)),
+        }
+        with open(out / "teacher_stats.json", "w", encoding="utf-8") as f:
+            json.dump(teacher_stats, f, ensure_ascii=False, indent=2)
+        del teacher
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
 
-    train_rows = [row for row in train_rows if row["id"] in teacher_logits]
-    if args.shuffle_teacher:
-        teacher_logits = shuffle_teacher_for_train(teacher_logits, train_rows, args.seed)
+        train_rows = [row for row in train_rows if row["id"] in teacher_logits]
+        if args.shuffle_teacher:
+            teacher_logits = shuffle_teacher_for_train(teacher_logits, train_rows, args.seed)
+        print(f"Teacher train stats: {teacher_stats['train']}")
+        print(f"Teacher val stats: {teacher_stats['val']}")
+        print(f"Teacher test stats: {teacher_stats['test']}")
+        print(f"LUPI train rows with MRI signal: {len(train_rows)}")
+    else:
+        print("alpha_lupi <= 0: running exact CE-only path without loading MRI teacher.")
     if not train_rows or not val_rows:
         raise RuntimeError("Need non-empty train and val records.")
-    print(f"Teacher train stats: {teacher_stats['train']}")
-    print(f"Teacher val stats: {teacher_stats['val']}")
-    print(f"Teacher test stats: {teacher_stats['test']}")
-    print(f"LUPI train rows with MRI signal: {len(train_rows)}")
 
     tokenizer = AutoTokenizer.from_pretrained(args.student, use_fast=False)
     student = AutoModelForSequenceClassification.from_pretrained(
@@ -242,8 +247,9 @@ def main():
         print(f"Requested max_len={args.max_len}, using {max_len}.")
     student = to_device(student, device, multi_gpu)
 
+    train_dataset = TextDataset(train_rows, tokenizer, max_len, teacher_logits if use_lupi else None)
     train_loader = DataLoader(
-        TextDataset(train_rows, tokenizer, max_len, teacher_logits),
+        train_dataset,
         batch_size=args.batch_text,
         shuffle=True,
         num_workers=args.workers,
@@ -257,9 +263,15 @@ def main():
     scheduler = get_linear_schedule_with_warmup(optimizer, int(steps * args.warmup), steps)
     scaler = torch.amp.GradScaler("cuda", enabled=device.type == "cuda")
 
-    best, best_dir, history = -1.0, out / "best_auc_lupi", []
+    best_name = "best_auc_lupi" if use_lupi else "best_auc_ce"
+    best, best_dir, history = -1.0, out / best_name, []
     for epoch in range(1, args.epochs + 1):
-        train_loss, train_ce, train_weight = lupi_epoch(student, train_loader, optimizer, scheduler, scaler, device, args)
+        if use_lupi:
+            train_loss, train_ce, train_weight = lupi_epoch(student, train_loader, optimizer, scheduler, scaler, device, args)
+        else:
+            train_loss = ce_epoch(student, train_loader, optimizer, scheduler, scaler, device, args.accum)
+            train_ce = train_loss
+            train_weight = 1.0
         val_metrics, val_ids, val_y, val_p, val_pred = eval_text(student, val_loader, device, args.threshold)
         row = {
             "epoch": epoch,
@@ -272,10 +284,8 @@ def main():
             "val_auc": round_float(val_metrics["auc"]),
         }
         history.append(row)
-        print(
-            f"Epoch {epoch:03d}/{args.epochs} | train_loss={train_loss:.3f} | "
-            f"train_weight={train_weight:.3f} | val_f1={val_metrics['f1']:.3f} | val_auc={val_metrics['auc']:.3f}"
-        )
+        mode_name = "LUPI" if use_lupi else "CE"
+        print(f"Epoch {epoch:03d}/{args.epochs} [{mode_name}] | train_loss={train_loss:.3f} | val_f1={val_metrics['f1']:.3f} | val_auc={val_metrics['auc']:.3f}")
         if val_metrics["auc"] > best:
             best = val_metrics["auc"]
             save_best(student, tokenizer, best_dir, epoch, val_metrics, args, max_len)
