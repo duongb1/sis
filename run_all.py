@@ -83,14 +83,36 @@ def read_split_metrics(run_dir, split):
     return None
 
 
+def read_confusion_matrix(run_dir, split):
+    path = run_dir / f"{split}_predictions_best_auc.csv"
+    if not path.exists():
+        return None
+    tn = fp = fn = tp = 0
+    with open(path, newline="", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            y = int(row["true_label"])
+            pred = int(row["pred_label"])
+            if y == 0 and pred == 0:
+                tn += 1
+            elif y == 0 and pred == 1:
+                fp += 1
+            elif y == 1 and pred == 0:
+                fn += 1
+            elif y == 1 and pred == 1:
+                tp += 1
+    return [[tn, fp], [fn, tp]]
+
+
 def summarize_results(out_root, rows):
     summary = []
     for row in rows:
         metrics = read_split_metrics(row["dir"], row["split"])
+        cm = read_confusion_matrix(row["dir"], row["split"])
         item = {k: row[k] for k in ["model", "init", "train_data", "mri_used", "loss", "test"]}
         item["metrics_file"] = str(row["dir"] / "metrics.json")
+        item["confusion_matrix"] = cm
         if metrics is None:
-            item.update({"accuracy": None, "f1": None, "auc": None, "loss_value": None, "threshold": None})
+            item.update({"accuracy": None, "f1": None, "auc": None, "loss_value": None, "threshold": None, "tn": None, "fp": None, "fn": None, "tp": None})
         else:
             item.update(
                 {
@@ -99,6 +121,10 @@ def summarize_results(out_root, rows):
                     "auc": metrics.get("auc"),
                     "loss_value": metrics.get("loss"),
                     "threshold": metrics.get("threshold"),
+                    "tn": cm[0][0] if cm else None,
+                    "fp": cm[0][1] if cm else None,
+                    "fn": cm[1][0] if cm else None,
+                    "tp": cm[1][1] if cm else None,
                 }
             )
         summary.append(item)
@@ -107,7 +133,7 @@ def summarize_results(out_root, rows):
     csv_path = out_root / "summary_results.csv"
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)
-    fieldnames = ["model", "init", "train_data", "mri_used", "loss", "test", "accuracy", "f1", "auc", "loss_value", "threshold", "metrics_file"]
+    fieldnames = ["model", "init", "train_data", "mri_used", "loss", "test", "accuracy", "f1", "auc", "tn", "fp", "fn", "tp", "loss_value", "threshold", "confusion_matrix", "metrics_file"]
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
@@ -126,6 +152,7 @@ def summarize_results(out_root, rows):
         ("Acc", "accuracy", 7),
         ("F1", "f1", 7),
         ("AUC", "auc", 7),
+        ("CM [[TN,FP],[FN,TP]]", "confusion_matrix", 22),
     ]
     header = " | ".join(name.ljust(width) for name, _, width in columns)
     print(header)
