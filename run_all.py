@@ -203,12 +203,14 @@ def main():
 
     mri_dir = out_root / "00_mri_teacher"
     paired_only_dir = out_root / "01_paired_only_ce"
-    large_text_dir = out_root / "02_large_text_ce"
-    large_to_paired_ce_dir = out_root / "03_large_to_paired_ce"
-    kd_dir = out_root / "04_large_to_paired_mri_kd"
-    lupi_dir = out_root / "05_large_to_paired_lupi"
-    kd_shuffle_dir = out_root / "06_large_to_paired_mri_kd_shuffled"
-    lupi_shuffle_dir = out_root / "07_large_to_paired_lupi_shuffled"
+    paired_kd_dir = out_root / "02_paired_mri_kd"
+    paired_lupi_dir = out_root / "03_paired_lupi"
+    large_text_dir = out_root / "04_large_text_ce"
+    large_to_paired_ce_dir = out_root / "05_large_to_paired_ce"
+    kd_dir = out_root / "06_large_to_paired_mri_kd"
+    lupi_dir = out_root / "07_large_to_paired_lupi"
+    kd_shuffle_dir = out_root / "08_large_to_paired_mri_kd_shuffled"
+    lupi_shuffle_dir = out_root / "09_large_to_paired_lupi_shuffled"
 
     large_ckpt = large_text_dir / "best_auc_phobert"
     mri_ckpt = mri_dir / "best_auc_model.pt"
@@ -241,7 +243,35 @@ def main():
             ],
         ),
         (
-            "2. Large-text CE: PhoBERT -> ~20K train -> ~20K test",
+            "2. Paired-only MRI KD: PhoBERT -> paired train + MRI teacher -> paired test 280",
+            [
+                py, "kd_mri_text.py",
+                "--student", args.base_model,
+                "--teacher", str(mri_ckpt),
+                "--out", str(paired_kd_dir),
+                "--alpha", str(args.kd_alpha),
+                "--kd", args.kd_loss,
+                "--temp", str(args.kd_temp),
+                *paired_mri_common,
+                *device_flags,
+            ],
+        ),
+        (
+            "3. Paired-only MRI LUPI: PhoBERT -> paired train + MRI weights -> paired test 280",
+            [
+                py, "train_lupi.py",
+                "--student", args.base_model,
+                "--teacher", str(mri_ckpt),
+                "--out", str(paired_lupi_dir),
+                "--alpha-lupi", str(args.lupi_alpha),
+                "--weight-min", str(args.lupi_weight_min),
+                "--weight-max", str(args.lupi_weight_max),
+                *paired_mri_common,
+                *device_flags,
+            ],
+        ),
+        (
+            "4. Large-text CE: PhoBERT -> ~20K train -> ~20K test",
             [
                 py, "train_text.py",
                 "--model", args.base_model,
@@ -255,7 +285,7 @@ def main():
             ],
         ),
         (
-            "3. Large-text -> paired CE",
+            "5. Large-text -> paired CE",
             [
                 py, "train_pair_text.py",
                 "--model", str(large_ckpt),
@@ -265,7 +295,7 @@ def main():
             ],
         ),
         (
-            "4. Large-text -> paired MRI KD",
+            "6. Large-text -> paired MRI KD",
             [
                 py, "kd_mri_text.py",
                 "--student", str(large_ckpt),
@@ -279,7 +309,7 @@ def main():
             ],
         ),
         (
-            "5. Large-text -> paired MRI LUPI",
+            "7. Large-text -> paired MRI LUPI",
             [
                 py, "train_lupi.py",
                 "--student", str(large_ckpt),
@@ -293,7 +323,7 @@ def main():
             ],
         ),
         (
-            "6a. Shuffled KD control",
+            "8. Shuffled KD control",
             [
                 py, "kd_mri_text.py",
                 "--student", str(large_ckpt),
@@ -308,7 +338,7 @@ def main():
             ],
         ),
         (
-            "6b. Shuffled LUPI control",
+            "9. Shuffled LUPI control",
             [
                 py, "train_lupi.py",
                 "--student", str(large_ckpt),
@@ -357,6 +387,26 @@ def main():
             "loss": "CE",
             "test": "paired test 280",
             "dir": paired_only_dir,
+            "split": "test",
+        },
+        {
+            "model": "Paired-only MRI-KD",
+            "init": "PhoBERT",
+            "train_data": "paired text",
+            "mri_used": "Yes",
+            "loss": "CE + KD",
+            "test": "paired test 280",
+            "dir": paired_kd_dir,
+            "split": "test",
+        },
+        {
+            "model": "Paired-only MRI-LUPI",
+            "init": "PhoBERT",
+            "train_data": "paired text",
+            "mri_used": "Yes",
+            "loss": "weighted CE",
+            "test": "paired test 280",
+            "dir": paired_lupi_dir,
             "split": "test",
         },
         {
