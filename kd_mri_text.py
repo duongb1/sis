@@ -32,6 +32,7 @@ def parse_args():
     p.add_argument("--warmup", type=float, default=0.1)
     p.add_argument("--alpha", type=float, default=0.05)
     p.add_argument("--kd", choices=["binary", "kl"], default="binary")
+    p.add_argument("--kd-weight", choices=["none", "confidence"], default="none")
     p.add_argument("--temp", type=float, default=2.0)
     p.add_argument("--ce-warmup", type=int, default=0)
     p.add_argument("--shuffle-teacher", action="store_true")
@@ -93,7 +94,7 @@ def main():
     steps = max(1, int(np.ceil(len(train_loader) / max(args.accum, 1))) * args.epochs)
     sched = get_linear_schedule_with_warmup(opt, int(steps * args.warmup), steps)
     scaler = torch.amp.GradScaler("cuda", enabled=device.type == "cuda")
-    loss_fn = kd_loss_fn(args.alpha, args.kd, args.temp, args.ce_warmup)
+    loss_fn = kd_loss_fn(args.alpha, args.kd, args.temp, args.ce_warmup, args.kd_weight)
     best, best_dir, history = -1.0, out / "best_auc_mri_text_kd", []
     for epoch in range(1, args.epochs + 1):
         tr_loss, tr_ce, tr_kd = kd_epoch(student, train_loader, opt, sched, scaler, device, loss_fn, epoch, args.accum)
@@ -115,6 +116,7 @@ def main():
                         "mri_teacher": args.teacher,
                         "alpha": args.alpha,
                         "kd_loss": args.kd,
+                        "kd_weight": args.kd_weight,
                         "temperature": args.temp,
                         "shuffle_teacher": args.shuffle_teacher,
                         "max_length": max_len,

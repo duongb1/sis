@@ -37,6 +37,7 @@ def parse_args():
     p.add_argument("--kd-alpha", type=float, default=0.05)
     p.add_argument("--kd-loss", choices=["binary", "kl"], default="binary")
     p.add_argument("--kd-temp", type=float, default=2.0)
+    p.add_argument("--class-weight-co", type=float, default=1.2)
     p.add_argument("--lupi-alpha", type=float, default=0.2)
     p.add_argument("--lupi-weight-min", type=float, default=0.75)
     p.add_argument("--lupi-weight-max", type=float, default=1.25)
@@ -207,10 +208,12 @@ def main():
     paired_lupi_dir = out_root / "03_paired_lupi"
     large_text_dir = out_root / "04_large_text_ce"
     large_to_paired_ce_dir = out_root / "05_large_to_paired_ce"
-    kd_dir = out_root / "06_large_to_paired_mri_kd"
-    lupi_dir = out_root / "07_large_to_paired_lupi"
-    kd_shuffle_dir = out_root / "08_large_to_paired_mri_kd_shuffled"
-    lupi_shuffle_dir = out_root / "09_large_to_paired_lupi_shuffled"
+    weighted_ce_dir = out_root / "06_large_to_paired_weighted_ce"
+    kd_dir = out_root / "07_large_to_paired_mri_kd"
+    conf_kd_dir = out_root / "08_large_to_paired_mri_kd_conf"
+    lupi_dir = out_root / "09_large_to_paired_lupi"
+    kd_shuffle_dir = out_root / "10_large_to_paired_mri_kd_shuffled"
+    lupi_shuffle_dir = out_root / "11_large_to_paired_lupi_shuffled"
 
     large_ckpt = large_text_dir / "best_auc_phobert"
     mri_ckpt = mri_dir / "best_auc_model.pt"
@@ -295,7 +298,18 @@ def main():
             ],
         ),
         (
-            "6. Large-text -> paired MRI KD",
+            "6. Large-text -> paired class-weighted CE",
+            [
+                py, "train_pair_text.py",
+                "--model", str(large_ckpt),
+                "--out", str(weighted_ce_dir),
+                "--class-weight-co", str(args.class_weight_co),
+                *paired_common,
+                *device_flags,
+            ],
+        ),
+        (
+            "7. Large-text -> paired MRI KD",
             [
                 py, "kd_mri_text.py",
                 "--student", str(large_ckpt),
@@ -309,7 +323,22 @@ def main():
             ],
         ),
         (
-            "7. Large-text -> paired MRI LUPI",
+            "8. Large-text -> paired confidence-aware MRI KD",
+            [
+                py, "kd_mri_text.py",
+                "--student", str(large_ckpt),
+                "--teacher", str(mri_ckpt),
+                "--out", str(conf_kd_dir),
+                "--alpha", str(args.kd_alpha),
+                "--kd", args.kd_loss,
+                "--kd-weight", "confidence",
+                "--temp", str(args.kd_temp),
+                *paired_mri_common,
+                *device_flags,
+            ],
+        ),
+        (
+            "9. Large-text -> paired MRI LUPI",
             [
                 py, "train_lupi.py",
                 "--student", str(large_ckpt),
@@ -323,7 +352,7 @@ def main():
             ],
         ),
         (
-            "8. Shuffled KD control",
+            "10. Shuffled KD control",
             [
                 py, "kd_mri_text.py",
                 "--student", str(large_ckpt),
@@ -338,7 +367,7 @@ def main():
             ],
         ),
         (
-            "9. Shuffled LUPI control",
+            "11. Shuffled LUPI control",
             [
                 py, "train_lupi.py",
                 "--student", str(large_ckpt),
@@ -430,6 +459,16 @@ def main():
             "split": "test",
         },
         {
+            "model": "Large-text -> weighted CE",
+            "init": "Large-text ckpt",
+            "train_data": "paired text",
+            "mri_used": "No",
+            "loss": "weighted CE",
+            "test": "paired test 280",
+            "dir": weighted_ce_dir,
+            "split": "test",
+        },
+        {
             "model": "Large-text -> paired KD",
             "init": "Large-text ckpt",
             "train_data": "paired text",
@@ -437,6 +476,16 @@ def main():
             "loss": "CE + KD",
             "test": "paired test 280",
             "dir": kd_dir,
+            "split": "test",
+        },
+        {
+            "model": "Large-text -> conf KD",
+            "init": "Large-text ckpt",
+            "train_data": "paired text",
+            "mri_used": "Yes",
+            "loss": "conf CE+KD",
+            "test": "paired test 280",
+            "dir": conf_kd_dir,
             "split": "test",
         },
         {

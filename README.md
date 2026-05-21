@@ -73,21 +73,36 @@ python train_pair_text.py \
   --images /kaggle/input/datasets/duongb/cthsis/images \
   --out /kaggle/working/large_to_paired_ce
 
-# 6. Large-text -> paired MRI KD
+# 6. Large-text -> paired class-weighted CE
+python train_pair_text.py \
+  --model /kaggle/working/text_phobert_classifier/best_auc_phobert \
+  --images /kaggle/input/datasets/duongb/cthsis/images \
+  --out /kaggle/working/large_to_paired_weighted_ce \
+  --class-weight-co 1.2
+
+# 7. Large-text -> paired MRI KD
 python kd_mri_text.py \
   --student /kaggle/working/text_phobert_classifier/best_auc_phobert \
   --teacher /kaggle/working/mri_classifier/best_auc_model.pt \
   --images /kaggle/input/datasets/duongb/cthsis/images \
   --out /kaggle/working/large_to_paired_mri_kd
 
-# 7. Large-text -> paired MRI LUPI
+# 8. Large-text -> paired confidence-aware MRI KD
+python kd_mri_text.py \
+  --student /kaggle/working/text_phobert_classifier/best_auc_phobert \
+  --teacher /kaggle/working/mri_classifier/best_auc_model.pt \
+  --images /kaggle/input/datasets/duongb/cthsis/images \
+  --out /kaggle/working/large_to_paired_mri_kd_conf \
+  --kd-weight confidence
+
+# 9. Large-text -> paired MRI LUPI
 python train_lupi.py \
   --student /kaggle/working/text_phobert_classifier/best_auc_phobert \
   --teacher /kaggle/working/mri_classifier/best_auc_model.pt \
   --images /kaggle/input/datasets/duongb/cthsis/images \
   --out /kaggle/working/large_to_paired_lupi
 
-# 8-9. Shuffled large-text controls
+# 10-11. Shuffled large-text controls
 python kd_mri_text.py \
   --student /kaggle/working/text_phobert_classifier/best_auc_phobert \
   --teacher /kaggle/working/mri_classifier/best_auc_model.pt \
@@ -102,6 +117,8 @@ python train_lupi.py \
   --out /kaggle/working/large_to_paired_lupi_shuffled \
   --shuffle-teacher
 ```
+
+`train_lupi.py` uses disagreement-aware LUPI by default: it increases CE weight when MRI teacher is more confident on the true label than the current text student.
 
 To run everything above once with synchronized defaults:
 

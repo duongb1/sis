@@ -12,7 +12,7 @@ def hf_loss(outputs, labels):
     return loss.mean()
 
 
-def ce_epoch(model, loader, optimizer, scheduler, scaler, device, accum=1):
+def ce_epoch(model, loader, optimizer, scheduler, scaler, device, accum=1, class_weights=None):
     model.train()
     total_loss, total_count = 0.0, 0
     optimizer.zero_grad(set_to_none=True)
@@ -20,7 +20,12 @@ def ce_epoch(model, loader, optimizer, scheduler, scaler, device, accum=1):
         inputs, _ = batch_to_device(batch, device, "id")
         labels = inputs["labels"]
         with torch.amp.autocast("cuda", enabled=device.type == "cuda"):
-            loss = hf_loss(model(**inputs), labels) / accum
+            if class_weights is None:
+                loss = hf_loss(model(**inputs), labels)
+            else:
+                model_inputs = {k: v for k, v in inputs.items() if k != "labels"}
+                loss = F.cross_entropy(model(**model_inputs).logits, labels, weight=class_weights)
+            loss = loss / accum
         scaler.scale(loss).backward()
         if step % accum == 0 or step == len(loader):
             scaler.unscale_(optimizer)
@@ -89,14 +94,15 @@ def eval_text(model, loader, device, threshold=0.5, desc="Evaluating"):
     return cls_metrics(labels, probs, preds, loss=loss, threshold=threshold), ids, labels, probs, preds
 
 
-def kd_loss_fn(alpha, kind="binary", temperature=2.0, warmup=0):
+def kd_loss_fn(alpha, kind="binary", temperature=2.0, warmup=0, kd_weight="none"):
     def loss_fn(student_logits, teacher_logits, labels, epoch):
         ce = F.cross_entropy(student_logits, labels, reduction="none")
         if epoch <= warmup or alpha <= 0:
             zero = torch.zeros((), device=student_logits.device)
             return ce.mean(), ce.mean().detach(), zero
+        teacher_probs = F.softmax(teacher_logits, dim=-1)
         if kind == "binary":
-            teacher_p = F.softmax(teacher_logits, dim=-1)[:, 1].detach()
+            teacher_p = teacher_probs[:, 1].detach()
             student_logit = student_logits[:, 1] - student_logits[:, 0]
             kd = F.binary_cross_entropy_with_logits(student_logit, teacher_p, reduction="none")
         elif kind == "kl":
@@ -107,6 +113,14 @@ def kd_loss_fn(alpha, kind="binary", temperature=2.0, warmup=0):
             ).sum(dim=-1) * (temperature ** 2)
         else:
             raise ValueError(f"Unsupported KD loss: {kind}")
-        loss = (1.0 - alpha) * ce + alpha * kd
-        return loss.mean(), ce.mean().detach(), kd.mean().detach()
+        if kd_weight == "none":
+            weights = torch.ones_like(kd)
+        elif kd_weight == "confidence":
+            teacher_conf = teacher_probs.max(dim=1).values.detach()
+            weights = torch.clamp((teacher_conf - 0.5) * 2.0, min=0.0, max=1.0)
+        else:
+            raise ValueError(f"Unsupported KD weight: {kd_weight}")
+        weighted_kd = weights * kd
+        loss = (1.0 - alpha) * ce + alpha * weighted_kd
+        return loss.mean(), ce.mean().detach(), weighted_kd.mean().detach()
     return loss_fn
