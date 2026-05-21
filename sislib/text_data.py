@@ -77,11 +77,12 @@ def collect_paired_text(image_root, splits=SPLITS):
 
 
 class TextDataset(Dataset):
-    def __init__(self, records, tokenizer, max_len, teacher_logits=None):
+    def __init__(self, records, tokenizer, max_len, teacher_logits=None, teacher_mri_vecs=None):
         self.records = records
         self.tokenizer = tokenizer
         self.max_len = max_len
         self.teacher_logits = teacher_logits
+        self.teacher_mri_vecs = teacher_mri_vecs
 
     def __len__(self):
         return len(self.records)
@@ -99,6 +100,8 @@ class TextDataset(Dataset):
         item["labels"] = torch.tensor(row["label"], dtype=torch.long)
         if self.teacher_logits is not None:
             item["teacher_logits"] = torch.tensor(self.teacher_logits[row["id"]], dtype=torch.float32)
+        if self.teacher_mri_vecs is not None:
+            item["teacher_mri_vec"] = torch.tensor(self.teacher_mri_vecs[row["id"]], dtype=torch.float32)
         item["id"] = row["id"]
         return item
 

@@ -8,7 +8,7 @@ from torchvision import transforms
 from tqdm import tqdm
 
 from .mri import MRIDataset, resnet50_binary
-from .common import round_metrics, to_device
+from .common import round_metrics, to_device, unwrap
 
 
 def clean_state_dict(state):
@@ -53,6 +53,47 @@ def compute_mri_logits(text_records, mri_records, teacher, device, batch_size, w
         if item_id in text_ids:
             z = float(np.mean(values))
             out[item_id] = [-z / 2.0, z / 2.0]
+    return out
+
+
+@torch.no_grad()
+def compute_mri_features(text_records, mri_records, teacher, device, batch_size, workers):
+    tf = transforms.Compose(
+        [
+            transforms.Resize((224, 224)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ]
+    )
+    loader = DataLoader(
+        MRIDataset(mri_records, tf),
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=workers,
+        pin_memory=device.type == "cuda",
+    )
+    base = unwrap(teacher)
+    features_by_id = {}
+    for images, _, ids in tqdm(loader, desc="Computing MRI teacher features"):
+        x = images.to(device, non_blocking=True)
+        x = base.conv1(x)
+        x = base.bn1(x)
+        x = base.relu(x)
+        x = base.maxpool(x)
+        x = base.layer1(x)
+        x = base.layer2(x)
+        x = base.layer3(x)
+        x = base.layer4(x)
+        x = base.avgpool(x)
+        feats = torch.flatten(x, 1).detach().cpu().numpy()
+        for feat, item_id in zip(feats, ids):
+            features_by_id.setdefault(item_id, []).append(feat.astype(np.float32))
+
+    text_ids = {row["id"] for row in text_records}
+    out = {}
+    for item_id, values in features_by_id.items():
+        if item_id in text_ids:
+            out[item_id] = np.mean(np.stack(values, axis=0), axis=0).astype(np.float32).tolist()
     return out
 
 

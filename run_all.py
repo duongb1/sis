@@ -41,6 +41,11 @@ def parse_args():
     p.add_argument("--lupi-alpha", type=float, default=0.2)
     p.add_argument("--lupi-weight-min", type=float, default=0.75)
     p.add_argument("--lupi-weight-max", type=float, default=1.25)
+    p.add_argument("--lambda-align", type=float, default=0.05)
+    p.add_argument("--align-loss", choices=["cosine", "mse"], default="cosine")
+    p.add_argument("--aux-dim", type=int, default=256)
+    p.add_argument("--align-warmup-epochs", type=int, default=3)
+    p.add_argument("--detach-aux", action="store_true")
 
     p.add_argument("--cpu", action="store_true")
     p.add_argument("--no-mgpu", action="store_true")
@@ -206,14 +211,16 @@ def main():
     paired_only_dir = out_root / "01_paired_only_ce"
     paired_kd_dir = out_root / "02_paired_mri_kd"
     paired_lupi_dir = out_root / "03_paired_lupi"
-    large_text_dir = out_root / "04_large_text_ce"
-    large_to_paired_ce_dir = out_root / "05_large_to_paired_ce"
-    weighted_ce_dir = out_root / "06_large_to_paired_weighted_ce"
-    kd_dir = out_root / "07_large_to_paired_mri_kd"
-    conf_kd_dir = out_root / "08_large_to_paired_mri_kd_conf"
-    lupi_dir = out_root / "09_large_to_paired_lupi"
-    kd_shuffle_dir = out_root / "10_large_to_paired_mri_kd_shuffled"
-    lupi_shuffle_dir = out_root / "11_large_to_paired_lupi_shuffled"
+    paired_dual_dir = out_root / "04_paired_dual_mri_align"
+    large_text_dir = out_root / "05_large_text_ce"
+    large_to_paired_ce_dir = out_root / "06_large_to_paired_ce"
+    weighted_ce_dir = out_root / "07_large_to_paired_weighted_ce"
+    kd_dir = out_root / "08_large_to_paired_mri_kd"
+    conf_kd_dir = out_root / "09_large_to_paired_mri_kd_conf"
+    lupi_dir = out_root / "10_large_to_paired_lupi"
+    large_dual_dir = out_root / "11_large_to_paired_dual_mri_align"
+    kd_shuffle_dir = out_root / "12_large_to_paired_mri_kd_shuffled"
+    lupi_shuffle_dir = out_root / "13_large_to_paired_lupi_shuffled"
 
     large_ckpt = large_text_dir / "best_auc_phobert"
     mri_ckpt = mri_dir / "best_auc_model.pt"
@@ -274,7 +281,22 @@ def main():
             ],
         ),
         (
-            "4. Large-text CE: PhoBERT -> ~20K train -> ~20K test",
+            "4. Paired-only Dual MRI-Align: PhoBERT -> paired train + MRI features -> paired test 280",
+            [
+                py, "train_dual_mri_align.py",
+                "--student", args.base_model,
+                "--teacher", str(mri_ckpt),
+                "--out", str(paired_dual_dir),
+                "--lambda-align", str(args.lambda_align),
+                "--align-loss", args.align_loss,
+                "--aux-dim", str(args.aux_dim),
+                "--align-warmup-epochs", str(args.align_warmup_epochs),
+                *paired_mri_common,
+                *device_flags,
+            ] + (["--detach-aux"] if args.detach_aux else []),
+        ),
+        (
+            "5. Large-text CE: PhoBERT -> ~20K train -> ~20K test",
             [
                 py, "train_text.py",
                 "--model", args.base_model,
@@ -288,7 +310,7 @@ def main():
             ],
         ),
         (
-            "5. Large-text -> paired CE",
+            "6. Large-text -> paired CE",
             [
                 py, "train_pair_text.py",
                 "--model", str(large_ckpt),
@@ -298,7 +320,7 @@ def main():
             ],
         ),
         (
-            "6. Large-text -> paired class-weighted CE",
+            "7. Large-text -> paired class-weighted CE",
             [
                 py, "train_pair_text.py",
                 "--model", str(large_ckpt),
@@ -309,7 +331,7 @@ def main():
             ],
         ),
         (
-            "7. Large-text -> paired MRI KD",
+            "8. Large-text -> paired MRI KD",
             [
                 py, "kd_mri_text.py",
                 "--student", str(large_ckpt),
@@ -323,7 +345,7 @@ def main():
             ],
         ),
         (
-            "8. Large-text -> paired confidence-aware MRI KD",
+            "9. Large-text -> paired confidence-aware MRI KD",
             [
                 py, "kd_mri_text.py",
                 "--student", str(large_ckpt),
@@ -338,7 +360,7 @@ def main():
             ],
         ),
         (
-            "9. Large-text -> paired MRI LUPI",
+            "10. Large-text -> paired MRI LUPI",
             [
                 py, "train_lupi.py",
                 "--student", str(large_ckpt),
@@ -352,7 +374,22 @@ def main():
             ],
         ),
         (
-            "10. Shuffled KD control",
+            "11. Large-text -> paired Dual MRI-Align",
+            [
+                py, "train_dual_mri_align.py",
+                "--student", str(large_ckpt),
+                "--teacher", str(mri_ckpt),
+                "--out", str(large_dual_dir),
+                "--lambda-align", str(args.lambda_align),
+                "--align-loss", args.align_loss,
+                "--aux-dim", str(args.aux_dim),
+                "--align-warmup-epochs", str(args.align_warmup_epochs),
+                *paired_mri_common,
+                *device_flags,
+            ] + (["--detach-aux"] if args.detach_aux else []),
+        ),
+        (
+            "12. Shuffled KD control",
             [
                 py, "kd_mri_text.py",
                 "--student", str(large_ckpt),
@@ -367,7 +404,7 @@ def main():
             ],
         ),
         (
-            "11. Shuffled LUPI control",
+            "13. Shuffled LUPI control",
             [
                 py, "train_lupi.py",
                 "--student", str(large_ckpt),
@@ -439,6 +476,16 @@ def main():
             "split": "test",
         },
         {
+            "model": "Paired-only Dual MRI-Align",
+            "init": "PhoBERT",
+            "train_data": "paired text",
+            "mri_used": "Yes",
+            "loss": "CE + align",
+            "test": "paired test 280",
+            "dir": paired_dual_dir,
+            "split": "test",
+        },
+        {
             "model": "Large-text CE",
             "init": "PhoBERT",
             "train_data": "~20K text",
@@ -496,6 +543,16 @@ def main():
             "loss": "weighted CE",
             "test": "paired test 280",
             "dir": lupi_dir,
+            "split": "test",
+        },
+        {
+            "model": "Large-text -> Dual MRI-Align",
+            "init": "Large-text ckpt",
+            "train_data": "paired text",
+            "mri_used": "Yes",
+            "loss": "CE + align",
+            "test": "paired test 280",
+            "dir": large_dual_dir,
             "split": "test",
         },
         {

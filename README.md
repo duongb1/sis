@@ -12,6 +12,7 @@ Large data folders, model checkpoints, and generated outputs are intentionally e
 - `eval_img_text.py`: evaluate a text checkpoint on patient `.txt` files inside the image test folder.
 - `kd_mri_text.py`: MRI teacher to paired-text student KD.
 - `train_lupi.py`: large-text checkpoint to paired-text LUPI with MRI-guided CE sample weights.
+- `train_dual_mri_align.py`: dual-stream PhoBERT with auxiliary MRI feature alignment.
 - `run_all.py`: run the full synchronized pipeline once.
 
 ## Shared Code
@@ -33,6 +34,7 @@ python train_mri.py --images /kaggle/input/datasets/duongb/cthsis/images
 python kd_mri_text.py --images /kaggle/input/datasets/duongb/cthsis/images
 python train_lupi.py --images /kaggle/input/datasets/duongb/cthsis/images
 python train_lupi.py --alpha-lupi 0.0 --images /kaggle/input/datasets/duongb/cthsis/images
+python train_dual_mri_align.py --images /kaggle/input/datasets/duongb/cthsis/images
 python run_all.py
 ```
 
@@ -61,33 +63,40 @@ python train_lupi.py \
   --images /kaggle/input/datasets/duongb/cthsis/images \
   --out /kaggle/working/paired_mri_lupi
 
-# 4. Large-text CE: PhoBERT -> ~20K train -> ~20K test
+# 4. Paired-only Dual MRI-Align: PhoBERT -> paired train + MRI features -> paired test 280
+python train_dual_mri_align.py \
+  --student vinai/phobert-base \
+  --teacher /kaggle/working/mri_classifier/best_auc_model.pt \
+  --images /kaggle/input/datasets/duongb/cthsis/images \
+  --out /kaggle/working/paired_dual_mri_align
+
+# 5. Large-text CE: PhoBERT -> ~20K train -> ~20K test
 python train_text.py \
   --model vinai/phobert-base \
   --data /kaggle/input/datasets/duongb/cthsis/texts \
   --out /kaggle/working/text_phobert_classifier
 
-# 5. Large-text -> paired CE
+# 6. Large-text -> paired CE
 python train_pair_text.py \
   --model /kaggle/working/text_phobert_classifier/best_auc_phobert \
   --images /kaggle/input/datasets/duongb/cthsis/images \
   --out /kaggle/working/large_to_paired_ce
 
-# 6. Large-text -> paired class-weighted CE
+# 7. Large-text -> paired class-weighted CE
 python train_pair_text.py \
   --model /kaggle/working/text_phobert_classifier/best_auc_phobert \
   --images /kaggle/input/datasets/duongb/cthsis/images \
   --out /kaggle/working/large_to_paired_weighted_ce \
   --class-weight-co 1.2
 
-# 7. Large-text -> paired MRI KD
+# 8. Large-text -> paired MRI KD
 python kd_mri_text.py \
   --student /kaggle/working/text_phobert_classifier/best_auc_phobert \
   --teacher /kaggle/working/mri_classifier/best_auc_model.pt \
   --images /kaggle/input/datasets/duongb/cthsis/images \
   --out /kaggle/working/large_to_paired_mri_kd
 
-# 8. Large-text -> paired confidence-aware MRI KD
+# 9. Large-text -> paired confidence-aware MRI KD
 python kd_mri_text.py \
   --student /kaggle/working/text_phobert_classifier/best_auc_phobert \
   --teacher /kaggle/working/mri_classifier/best_auc_model.pt \
@@ -95,14 +104,21 @@ python kd_mri_text.py \
   --out /kaggle/working/large_to_paired_mri_kd_conf \
   --kd-weight confidence
 
-# 9. Large-text -> paired MRI LUPI
+# 10. Large-text -> paired MRI LUPI
 python train_lupi.py \
   --student /kaggle/working/text_phobert_classifier/best_auc_phobert \
   --teacher /kaggle/working/mri_classifier/best_auc_model.pt \
   --images /kaggle/input/datasets/duongb/cthsis/images \
   --out /kaggle/working/large_to_paired_lupi
 
-# 10-11. Shuffled large-text controls
+# 11. Large-text -> paired Dual MRI-Align
+python train_dual_mri_align.py \
+  --student /kaggle/working/text_phobert_classifier/best_auc_phobert \
+  --teacher /kaggle/working/mri_classifier/best_auc_model.pt \
+  --images /kaggle/input/datasets/duongb/cthsis/images \
+  --out /kaggle/working/large_to_paired_dual_mri_align
+
+# 12-13. Shuffled large-text controls
 python kd_mri_text.py \
   --student /kaggle/working/text_phobert_classifier/best_auc_phobert \
   --teacher /kaggle/working/mri_classifier/best_auc_model.pt \
@@ -119,6 +135,8 @@ python train_lupi.py \
 ```
 
 `train_lupi.py` uses disagreement-aware LUPI by default: it increases CE weight when MRI teacher is more confident on the true label than the current text student.
+
+`train_dual_mri_align.py` uses MRI penultimate ResNet50 features only during training. Validation/test metrics come only from the main text classification node.
 
 To run everything above once with synchronized defaults:
 
