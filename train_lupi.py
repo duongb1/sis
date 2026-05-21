@@ -1,0 +1,291 @@
+import argparse
+import csv
+import json
+import random
+from pathlib import Path
+
+import numpy as np
+import torch
+import torch.nn.functional as F
+from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, roc_auc_score
+from torch.utils.data import DataLoader
+from torchvision import transforms
+from tqdm import tqdm
+from transformers import AutoModelForSequenceClassification, AutoTokenizer, get_linear_schedule_with_warmup
+
+from sislib.common import get_device, resolve_max_len, round_float, round_metrics, seed_all, split_records, to_device, unwrap
+from sislib.metrics import save_preds
+from sislib.mri import MRIDataset, collect_pairs, resnet50_binary
+from sislib.text_data import TextDataset, collect_paired_text, save_records
+from sislib.text_train import eval_text
+
+
+def parse_args():
+    p = argparse.ArgumentParser(description="Paired-text LUPI training with MRI-guided CE sample weights.")
+    p.add_argument("--images", default="/kaggle/input/datasets/duongb/cthsis/images")
+    p.add_argument("--teacher", default="/kaggle/working/mri_classifier/best_auc_model.pt")
+    p.add_argument("--student", default="/kaggle/working/text_phobert_classifier/best_auc_phobert")
+    p.add_argument("--out", default="/kaggle/working/paired_text_lupi_from_mri")
+    p.add_argument("--max-len", type=int, default=512)
+    p.add_argument("--batch-text", type=int, default=16)
+    p.add_argument("--batch-mri", type=int, default=64)
+    p.add_argument("--epochs", type=int, default=3)
+    p.add_argument("--lr", type=float, default=1e-5)
+    p.add_argument("--wd", type=float, default=0.01)
+    p.add_argument("--warmup", type=float, default=0.1)
+    p.add_argument("--alpha-lupi", type=float, default=0.2)
+    p.add_argument("--weight-min", type=float, default=0.75)
+    p.add_argument("--weight-max", type=float, default=1.25)
+    p.add_argument("--shuffle-teacher", action="store_true")
+    p.add_argument("--threshold", type=float, default=0.5)
+    p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--workers", type=int, default=0)
+    p.add_argument("--accum", type=int, default=1)
+    p.add_argument("--cpu", action="store_true")
+    p.add_argument("--no-mgpu", action="store_true")
+    return p.parse_args()
+
+
+def clean_state_dict(state):
+    if any(k.startswith("module.") for k in state):
+        return {k.replace("module.", "", 1): v for k, v in state.items()}
+    return state
+
+
+def load_mri_teacher(path, device, multi_gpu):
+    ckpt = torch.load(path, map_location=device, weights_only=False)
+    state = ckpt["model_state"] if isinstance(ckpt, dict) and "model_state" in ckpt else ckpt
+    model = resnet50_binary()
+    model.load_state_dict(clean_state_dict(state))
+    return to_device(model.eval(), device, multi_gpu)
+
+
+@torch.no_grad()
+def compute_mri_logits(text_records, mri_records, teacher, device, batch_size, workers, threshold):
+    tf = transforms.Compose(
+        [
+            transforms.Resize((224, 224)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ]
+    )
+    loader = DataLoader(
+        MRIDataset(mri_records, tf),
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=workers,
+        pin_memory=device.type == "cuda",
+    )
+    logits_by_id, labels_by_id = {}, {}
+    for images, labels, ids in tqdm(loader, desc="Computing MRI teacher logits"):
+        logits = teacher(images.to(device, non_blocking=True)).squeeze(1).detach().cpu().numpy()
+        for logit, label, item_id in zip(logits, labels, ids):
+            logits_by_id.setdefault(item_id, []).append(float(logit))
+            labels_by_id[item_id] = int(label)
+
+    text_ids = {r["id"] for r in text_records}
+    teacher_logits, eval_rows = {}, []
+    for item_id, values in logits_by_id.items():
+        if item_id not in text_ids:
+            continue
+        z = float(np.mean(values))
+        p_co = 1.0 / (1.0 + np.exp(-z))
+        y = labels_by_id[item_id]
+        teacher_logits[item_id] = [-z / 2.0, z / 2.0]
+        eval_rows.append((item_id, y, p_co))
+
+    labels = np.array([r[1] for r in eval_rows], dtype=np.int64)
+    probs = np.array([r[2] for r in eval_rows], dtype=np.float32)
+    preds = (probs >= threshold).astype(np.int64)
+    stats = {
+        "teacher_accuracy": float(accuracy_score(labels, preds)) if len(labels) else float("nan"),
+        "teacher_f1": float(f1_score(labels, preds, zero_division=0)) if len(labels) else float("nan"),
+        "teacher_auc": float(roc_auc_score(labels, probs)) if len(np.unique(labels)) == 2 else float("nan"),
+        "teacher_num_patients": int(len(labels)),
+        "teacher_correct_patients": int((preds == labels).sum()) if len(labels) else 0,
+    }
+    return teacher_logits, stats
+
+
+def shuffle_teacher_for_train(teacher_logits, train_rows, seed):
+    rng = random.Random(seed)
+    ids = [row["id"] for row in train_rows if row["id"] in teacher_logits]
+    shuffled = ids[:]
+    rng.shuffle(shuffled)
+    out = dict(teacher_logits)
+    for target_id, source_id in zip(ids, shuffled):
+        out[target_id] = teacher_logits[source_id]
+    return out
+
+
+def lupi_loss(student_logits, teacher_logits, labels, alpha, weight_min, weight_max):
+    ce = F.cross_entropy(student_logits, labels, reduction="none")
+    with torch.no_grad():
+        teacher_probs = F.softmax(teacher_logits, dim=-1)
+        teacher_conf_gt = torch.gather(teacher_probs, dim=1, index=labels.unsqueeze(1)).squeeze(1)
+        weights = 1.0 + alpha * (teacher_conf_gt - 0.5)
+        weights = torch.clamp(weights, min=weight_min, max=weight_max)
+    return (weights * ce).mean(), ce.mean().detach(), weights.mean().detach()
+
+
+def lupi_epoch(model, loader, optimizer, scheduler, scaler, device, args):
+    model.train()
+    total_loss = total_ce = total_weight = 0.0
+    total_count = 0
+    optimizer.zero_grad(set_to_none=True)
+    for step, batch in enumerate(tqdm(loader, desc="Training LUPI", leave=False), start=1):
+        ids = batch.pop("id")
+        labels = batch.pop("labels").to(device, non_blocking=True)
+        teacher_logits = batch.pop("teacher_logits").to(device, non_blocking=True)
+        inputs = {k: v.to(device, non_blocking=True) for k, v in batch.items()}
+        with torch.amp.autocast("cuda", enabled=device.type == "cuda"):
+            outputs = model(**inputs)
+            loss, ce, weight = lupi_loss(outputs.logits, teacher_logits, labels, args.alpha_lupi, args.weight_min, args.weight_max)
+            loss = loss / args.accum
+        scaler.scale(loss).backward()
+        if step % args.accum == 0 or step == len(loader):
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(unwrap(model).parameters(), max_norm=1.0)
+            scaler.step(optimizer)
+            scaler.update()
+            scheduler.step()
+            optimizer.zero_grad(set_to_none=True)
+        bs = labels.size(0)
+        total_loss += loss.item() * args.accum * bs
+        total_ce += ce.item() * bs
+        total_weight += weight.item() * bs
+        total_count += bs
+        del ids
+    denom = max(total_count, 1)
+    return float(total_loss / denom), float(total_ce / denom), float(total_weight / denom)
+
+
+def save_best(model, tokenizer, path, epoch, metrics, args, max_len):
+    path.mkdir(parents=True, exist_ok=True)
+    unwrap(model).save_pretrained(path)
+    tokenizer.save_pretrained(path)
+    with open(path / "training_info.json", "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "epoch": epoch,
+                "best_model_metric": "auc",
+                "val_metrics": round_metrics(metrics),
+                "student_init": args.student,
+                "mri_teacher": args.teacher,
+                "alpha_lupi": args.alpha_lupi,
+                "weight_min": args.weight_min,
+                "weight_max": args.weight_max,
+                "shuffle_teacher": args.shuffle_teacher,
+                "max_length": max_len,
+            },
+            f,
+            ensure_ascii=False,
+            indent=2,
+        )
+
+
+def main():
+    args = parse_args()
+    seed_all(args.seed)
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    device = get_device(args.cpu)
+    multi_gpu = not args.no_mgpu
+
+    text_records, missing, image_root = collect_paired_text(args.images)
+    if missing:
+        (out / "missing_text_patients.txt").write_text("\n".join(missing), encoding="utf-8")
+    mri_records, _ = collect_pairs(args.images)
+    train_rows, val_rows, test_rows = [split_records(text_records, s) for s in ("train", "val", "test")]
+    print(f"Image root: {image_root.resolve()}")
+    print(f"Paired text patients: {len(text_records)} | Train: {len(train_rows)} | Val: {len(val_rows)} | Test: {len(test_rows)}")
+
+    teacher = load_mri_teacher(args.teacher, device, multi_gpu)
+    teacher_logits, teacher_stats = compute_mri_logits(text_records, mri_records, teacher, device, args.batch_mri, args.workers, args.threshold)
+    with open(out / "teacher_stats.json", "w", encoding="utf-8") as f:
+        json.dump(round_metrics(teacher_stats), f, ensure_ascii=False, indent=2)
+    del teacher
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+
+    train_rows = [row for row in train_rows if row["id"] in teacher_logits]
+    if args.shuffle_teacher:
+        teacher_logits = shuffle_teacher_for_train(teacher_logits, train_rows, args.seed)
+    if not train_rows or not val_rows:
+        raise RuntimeError("Need non-empty train and val records.")
+    print(f"Teacher stats: {round_metrics(teacher_stats)}")
+    print(f"LUPI train rows with MRI signal: {len(train_rows)}")
+
+    tokenizer = AutoTokenizer.from_pretrained(args.student, use_fast=False)
+    student = AutoModelForSequenceClassification.from_pretrained(
+        args.student,
+        num_labels=2,
+        id2label={0: "khong", 1: "co"},
+        label2id={"khong": 0, "co": 1},
+    )
+    max_len = resolve_max_len(student, args.max_len)
+    if max_len != args.max_len:
+        print(f"Requested max_len={args.max_len}, using {max_len}.")
+    student = to_device(student, device, multi_gpu)
+
+    train_loader = DataLoader(
+        TextDataset(train_rows, tokenizer, max_len, teacher_logits),
+        batch_size=args.batch_text,
+        shuffle=True,
+        num_workers=args.workers,
+        pin_memory=device.type == "cuda",
+    )
+    val_loader = DataLoader(TextDataset(val_rows, tokenizer, max_len), batch_size=args.batch_text, shuffle=False, num_workers=args.workers, pin_memory=device.type == "cuda")
+    test_loader = DataLoader(TextDataset(test_rows, tokenizer, max_len), batch_size=args.batch_text, shuffle=False, num_workers=args.workers, pin_memory=device.type == "cuda") if test_rows else None
+
+    optimizer = torch.optim.AdamW(student.parameters(), lr=args.lr, weight_decay=args.wd)
+    steps = max(1, int(np.ceil(len(train_loader) / max(args.accum, 1))) * args.epochs)
+    scheduler = get_linear_schedule_with_warmup(optimizer, int(steps * args.warmup), steps)
+    scaler = torch.amp.GradScaler("cuda", enabled=device.type == "cuda")
+
+    best, best_dir, history = -1.0, out / "best_auc_lupi", []
+    for epoch in range(1, args.epochs + 1):
+        train_loss, train_ce, train_weight = lupi_epoch(student, train_loader, optimizer, scheduler, scaler, device, args)
+        val_metrics, val_ids, val_y, val_p, val_pred = eval_text(student, val_loader, device, args.threshold)
+        row = {
+            "epoch": epoch,
+            "train_loss": round_float(train_loss),
+            "train_ce": round_float(train_ce),
+            "train_weight": round_float(train_weight),
+            "val_loss": round_float(val_metrics["loss"]),
+            "val_acc": round_float(val_metrics["accuracy"]),
+            "val_f1": round_float(val_metrics["f1"]),
+            "val_auc": round_float(val_metrics["auc"]),
+        }
+        history.append(row)
+        print(
+            f"Epoch {epoch:03d}/{args.epochs} | train_loss={train_loss:.3f} | "
+            f"train_weight={train_weight:.3f} | val_f1={val_metrics['f1']:.3f} | val_auc={val_metrics['auc']:.3f}"
+        )
+        if val_metrics["auc"] > best:
+            best = val_metrics["auc"]
+            save_best(student, tokenizer, best_dir, epoch, val_metrics, args, max_len)
+            save_preds(out / "val_predictions_best_auc.csv", val_ids, val_y, val_p, val_pred, "id")
+
+    with open(out / "training_history.csv", "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=list(history[0].keys()))
+        writer.writeheader()
+        writer.writerows(history)
+    save_records(out / "dataset_records.csv", text_records)
+
+    eval_model = to_device(AutoModelForSequenceClassification.from_pretrained(best_dir), device, multi_gpu)
+    all_metrics = {}
+    for split, loader in [("val", val_loader), ("test", test_loader)]:
+        if loader is None:
+            continue
+        metrics, ids, y, p, pred = eval_text(eval_model, loader, device, args.threshold)
+        all_metrics[split] = round_metrics(metrics)
+        save_preds(out / f"{split}_predictions_best_auc.csv", ids, y, p, pred, "id")
+        print(f"{split}: {round_metrics(metrics)}")
+        print(confusion_matrix(y, pred, labels=[0, 1]))
+    with open(out / "metrics.json", "w", encoding="utf-8") as f:
+        json.dump(all_metrics, f, ensure_ascii=False, indent=2)
+
+
+if __name__ == "__main__":
+    main()
