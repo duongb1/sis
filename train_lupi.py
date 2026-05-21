@@ -125,12 +125,15 @@ def shuffle_teacher_for_train(teacher_logits, train_rows, seed):
     return out
 
 
-def lupi_loss(student_logits, teacher_logits, labels, alpha, weight_min, weight_max):
+def lupi_disagreement_loss(student_logits, teacher_logits, labels, alpha, weight_min, weight_max):
     ce = F.cross_entropy(student_logits, labels, reduction="none")
     with torch.no_grad():
         teacher_probs = F.softmax(teacher_logits, dim=-1)
+        student_probs = F.softmax(student_logits, dim=-1)
         teacher_conf_gt = torch.gather(teacher_probs, dim=1, index=labels.unsqueeze(1)).squeeze(1)
-        weights = 1.0 + alpha * (teacher_conf_gt - 0.5)
+        student_conf_gt = torch.gather(student_probs, dim=1, index=labels.unsqueeze(1)).squeeze(1)
+        gap = torch.clamp(teacher_conf_gt - student_conf_gt, min=0.0)
+        weights = 1.0 + alpha * gap
         weights = torch.clamp(weights, min=weight_min, max=weight_max)
     return (weights * ce).mean(), ce.mean().detach(), weights.mean().detach()
 
@@ -147,7 +150,7 @@ def lupi_epoch(model, loader, optimizer, scheduler, scaler, device, args):
         inputs = {k: v.to(device, non_blocking=True) for k, v in batch.items()}
         with torch.amp.autocast("cuda", enabled=device.type == "cuda"):
             outputs = model(**inputs)
-            loss, ce, weight = lupi_loss(outputs.logits, teacher_logits, labels, args.alpha_lupi, args.weight_min, args.weight_max)
+            loss, ce, weight = lupi_disagreement_loss(outputs.logits, teacher_logits, labels, args.alpha_lupi, args.weight_min, args.weight_max)
             loss = loss / args.accum
         scaler.scale(loss).backward()
         if step % args.accum == 0 or step == len(loader):
@@ -179,6 +182,7 @@ def save_best(model, tokenizer, path, epoch, metrics, args, max_len):
                 "val_metrics": round_metrics(metrics),
                 "student_init": args.student,
                 "mri_teacher": args.teacher,
+                "lupi_weighting": "teacher_student_confidence_gap",
                 "alpha_lupi": args.alpha_lupi,
                 "weight_min": args.weight_min,
                 "weight_max": args.weight_max,
