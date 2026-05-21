@@ -8,6 +8,7 @@ Large data folders, model checkpoints, and generated outputs are intentionally e
 
 - `train_mri.py`: MRI-only ResNet50 classifier. Saves `best_auc_model.pt`.
 - `train_text.py`: large text-only PhoBERT classifier on `texts/{train,val,test}/{co,khong}/*.txt`.
+- `train_pair_text.py`: paired text-only PhoBERT classifier on patient `.txt` files inside image folders.
 - `eval_img_text.py`: evaluate a text checkpoint on patient `.txt` files inside the image test folder.
 - `kd_mri_text.py`: MRI teacher to paired-text student KD.
 - `kd_text_pair.py`: large-text teacher to paired-text student KD.
@@ -24,6 +25,7 @@ Large data folders, model checkpoints, and generated outputs are intentionally e
 
 ```bash
 python train_text.py --data /kaggle/input/datasets/duongb/cthsis/texts
+python train_pair_text.py --images /kaggle/input/datasets/duongb/cthsis/images
 python eval_img_text.py --images /kaggle/input/datasets/duongb/cthsis/images
 python train_mri.py --images /kaggle/input/datasets/duongb/cthsis/images
 python kd_text_pair.py --images /kaggle/input/datasets/duongb/cthsis/images
