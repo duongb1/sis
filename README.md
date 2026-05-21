@@ -97,3 +97,8 @@ python run_all.py \
   --texts /kaggle/input/datasets/duongb/cthsis/texts \
   --out-root /kaggle/working/sis_runs
 ```
+
+At the end, `run_all.py` prints one summary table and writes:
+
+- `/kaggle/working/sis_runs/summary_results.csv`
+- `/kaggle/working/sis_runs/summary_results.json`

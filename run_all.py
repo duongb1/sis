@@ -1,4 +1,5 @@
 import argparse
+import csv
 import json
 import subprocess
 import sys
@@ -59,6 +60,80 @@ def run_stage(name, cmd, dry_run):
     if dry_run:
         return
     subprocess.run(cmd, check=True)
+
+
+def fmt(value):
+    if value is None:
+        return ""
+    if isinstance(value, float):
+        return f"{value:.3f}"
+    return str(value)
+
+
+def read_split_metrics(run_dir, split):
+    path = run_dir / "metrics.json"
+    if not path.exists():
+        return None
+    with open(path, encoding="utf-8") as f:
+        metrics = json.load(f)
+    if split in metrics:
+        return metrics[split]
+    if metrics:
+        return next(iter(metrics.values()))
+    return None
+
+
+def summarize_results(out_root, rows):
+    summary = []
+    for row in rows:
+        metrics = read_split_metrics(row["dir"], row["split"])
+        item = {k: row[k] for k in ["model", "init", "train_data", "mri_used", "loss", "test"]}
+        item["metrics_file"] = str(row["dir"] / "metrics.json")
+        if metrics is None:
+            item.update({"accuracy": None, "f1": None, "auc": None, "loss_value": None, "threshold": None})
+        else:
+            item.update(
+                {
+                    "accuracy": metrics.get("accuracy"),
+                    "f1": metrics.get("f1"),
+                    "auc": metrics.get("auc"),
+                    "loss_value": metrics.get("loss"),
+                    "threshold": metrics.get("threshold"),
+                }
+            )
+        summary.append(item)
+
+    json_path = out_root / "summary_results.json"
+    csv_path = out_root / "summary_results.csv"
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(summary, f, ensure_ascii=False, indent=2)
+    fieldnames = ["model", "init", "train_data", "mri_used", "loss", "test", "accuracy", "f1", "auc", "loss_value", "threshold", "metrics_file"]
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(summary)
+
+    print("\n" + "=" * 120)
+    print("SUMMARY RESULTS")
+    print("=" * 120)
+    columns = [
+        ("Model", "model", 32),
+        ("Init", "init", 16),
+        ("Train data", "train_data", 14),
+        ("MRI", "mri_used", 9),
+        ("Loss", "loss", 12),
+        ("Test", "test", 15),
+        ("Acc", "accuracy", 7),
+        ("F1", "f1", 7),
+        ("AUC", "auc", 7),
+    ]
+    header = " | ".join(name.ljust(width) for name, _, width in columns)
+    print(header)
+    print("-" * len(header))
+    for row in summary:
+        print(" | ".join(fmt(row[key])[:width].ljust(width) for _, key, width in columns))
+    print(f"\nSaved: {csv_path}")
+    print(f"Saved: {json_path}")
 
 
 def main():
@@ -231,6 +306,91 @@ def main():
 
     for name, cmd in stages:
         run_stage(name, cmd, args.dry_run)
+
+    summary_rows = [
+        {
+            "model": "MRI-only teacher",
+            "init": "ImageNet",
+            "train_data": "paired MRI",
+            "mri_used": "Yes",
+            "loss": "BCE",
+            "test": "paired test 280",
+            "dir": mri_dir,
+            "split": "test",
+        },
+        {
+            "model": "Paired-only CE",
+            "init": "PhoBERT",
+            "train_data": "paired text",
+            "mri_used": "No",
+            "loss": "CE",
+            "test": "paired test 280",
+            "dir": paired_only_dir,
+            "split": "test",
+        },
+        {
+            "model": "Large-text CE",
+            "init": "PhoBERT",
+            "train_data": "~20K text",
+            "mri_used": "No",
+            "loss": "CE",
+            "test": "~20K test",
+            "dir": large_text_dir,
+            "split": "test",
+        },
+        {
+            "model": "Large-text -> paired CE",
+            "init": "Large-text ckpt",
+            "train_data": "paired text",
+            "mri_used": "No",
+            "loss": "CE",
+            "test": "paired test 280",
+            "dir": large_to_paired_ce_dir,
+            "split": "test",
+        },
+        {
+            "model": "Large-text -> paired KD",
+            "init": "Large-text ckpt",
+            "train_data": "paired text",
+            "mri_used": "Yes",
+            "loss": "CE + KD",
+            "test": "paired test 280",
+            "dir": kd_dir,
+            "split": "test",
+        },
+        {
+            "model": "Large-text -> paired LUPI",
+            "init": "Large-text ckpt",
+            "train_data": "paired text",
+            "mri_used": "Yes",
+            "loss": "weighted CE",
+            "test": "paired test 280",
+            "dir": lupi_dir,
+            "split": "test",
+        },
+        {
+            "model": "Shuffled KD",
+            "init": "Large-text ckpt",
+            "train_data": "paired text",
+            "mri_used": "shuffled",
+            "loss": "CE + KD",
+            "test": "paired test 280",
+            "dir": kd_shuffle_dir,
+            "split": "test",
+        },
+        {
+            "model": "Shuffled LUPI",
+            "init": "Large-text ckpt",
+            "train_data": "paired text",
+            "mri_used": "shuffled",
+            "loss": "weighted CE",
+            "test": "paired test 280",
+            "dir": lupi_shuffle_dir,
+            "split": "test",
+        },
+    ]
+    if not args.dry_run:
+        summarize_results(out_root, summary_rows)
 
 
 if __name__ == "__main__":
