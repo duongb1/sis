@@ -112,13 +112,15 @@ def summarize_results(out_root, rows):
         item["metrics_file"] = str(row["dir"] / "metrics.json")
         item["confusion_matrix"] = cm
         if metrics is None:
-            item.update({"accuracy": None, "f1": None, "auc": None, "loss_value": None, "threshold": None, "tn": None, "fp": None, "fn": None, "tp": None})
+            item.update({"accuracy": None, "f1": None, "auc": None, "sensitivity": None, "specificity": None, "loss_value": None, "threshold": None, "tn": None, "fp": None, "fn": None, "tp": None})
         else:
             item.update(
                 {
                     "accuracy": metrics.get("accuracy"),
                     "f1": metrics.get("f1"),
                     "auc": metrics.get("auc"),
+                    "sensitivity": metrics.get("sensitivity"),
+                    "specificity": metrics.get("specificity"),
                     "loss_value": metrics.get("loss"),
                     "threshold": metrics.get("threshold"),
                     "tn": cm[0][0] if cm else None,
@@ -133,7 +135,7 @@ def summarize_results(out_root, rows):
     csv_path = out_root / "summary_results.csv"
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)
-    fieldnames = ["model", "init", "train_data", "mri_used", "loss", "test", "accuracy", "f1", "auc", "tn", "fp", "fn", "tp", "loss_value", "threshold", "confusion_matrix", "metrics_file"]
+    fieldnames = ["model", "init", "train_data", "mri_used", "loss", "test", "accuracy", "f1", "auc", "sensitivity", "specificity", "tn", "fp", "fn", "tp", "loss_value", "threshold", "confusion_matrix", "metrics_file"]
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
@@ -152,6 +154,8 @@ def summarize_results(out_root, rows):
         ("Acc", "accuracy", 7),
         ("F1", "f1", 7),
         ("AUC", "auc", 7),
+        ("Sens", "sensitivity", 7),
+        ("Spec", "specificity", 7),
         ("CM [[TN,FP],[FN,TP]]", "confusion_matrix", 22),
     ]
     header = " | ".join(name.ljust(width) for name, _, width in columns)

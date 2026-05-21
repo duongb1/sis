@@ -67,10 +67,16 @@ def teacher_stats_for_records(records, teacher_logits, threshold):
     else:
         probs = np.array([], dtype=np.float32)
         preds = np.array([], dtype=np.int64)
+    tp = int(((labels == 1) & (preds == 1)).sum())
+    tn = int(((labels == 0) & (preds == 0)).sum())
+    fp = int(((labels == 0) & (preds == 1)).sum())
+    fn = int(((labels == 1) & (preds == 0)).sum())
     return {
         "teacher_accuracy": float(accuracy_score(labels, preds)) if len(labels) else float("nan"),
         "teacher_f1": float(f1_score(labels, preds, zero_division=0)) if len(labels) else float("nan"),
         "teacher_auc": float(roc_auc_score(labels, probs)) if len(np.unique(labels)) == 2 else float("nan"),
+        "teacher_sensitivity": float(tp / (tp + fn)) if (tp + fn) else float("nan"),
+        "teacher_specificity": float(tn / (tn + fp)) if (tn + fp) else float("nan"),
         "teacher_num_patients": int(len(labels)),
         "teacher_correct_patients": int((preds == labels).sum()) if len(labels) else 0,
         "teacher_missing_patients": int(len(records) - len(rows)),

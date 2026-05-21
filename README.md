@@ -98,7 +98,7 @@ python run_all.py \
   --out-root /kaggle/working/sis_runs
 ```
 
-At the end, `run_all.py` prints one summary table with `Acc`, `F1`, `AUC`, and confusion matrix `[[TN, FP], [FN, TP]]`, then writes:
+At the end, `run_all.py` prints one summary table with `Acc`, `F1`, `AUC`, sensitivity, specificity, and confusion matrix `[[TN, FP], [FN, TP]]`, then writes:
 
 - `/kaggle/working/sis_runs/summary_results.csv`
 - `/kaggle/working/sis_runs/summary_results.json`

@@ -72,11 +72,28 @@ def eval_mri(model, loader, device, threshold):
             logits_by_id[item_id].append(float(logit))
             labels_by_id[item_id] = int(label.item())
     ids = sorted(logits_by_id)
-    probs = np.array([torch.sigmoid(torch.tensor(np.mean(logits_by_id[i]))).item() for i in ids])
+    patient_logits = np.array([np.mean(logits_by_id[i]) for i in ids], dtype=np.float32)
+    probs = np.array([torch.sigmoid(torch.tensor(logit)).item() for logit in patient_logits])
     labels = np.array([labels_by_id[i] for i in ids])
     preds = (probs >= threshold).astype(np.int64)
     metrics = cls_metrics(labels, probs, preds, loss=total_loss / max(total_count, 1), id_name="num_patients", threshold=threshold)
-    return metrics, ids, labels, probs, preds
+    return metrics, ids, labels, patient_logits, probs, preds
+
+
+def save_mri_teacher_outputs(path, ids, labels, logits, probs, preds):
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=["id", "true_label", "logit_co", "prob_co", "pred_label"])
+        writer.writeheader()
+        for item_id, label, logit, prob, pred in zip(ids, labels, logits, probs, preds):
+            writer.writerow(
+                {
+                    "id": item_id,
+                    "true_label": int(label),
+                    "logit_co": round_float(logit),
+                    "prob_co": round_float(prob),
+                    "pred_label": int(pred),
+                }
+            )
 
 
 def save_ckpt(path, model, epoch, metrics, args):
@@ -110,6 +127,7 @@ def main():
 
     train_tf, eval_tf = mri_transforms(args.size)
     train_loader = DataLoader(MRIDataset(train_rows, train_tf), batch_size=args.batch, shuffle=True, num_workers=args.workers, pin_memory=device.type == "cuda")
+    train_eval_loader = DataLoader(MRIDataset(train_rows, eval_tf), batch_size=args.batch, shuffle=False, num_workers=args.workers, pin_memory=device.type == "cuda")
     val_loader = DataLoader(MRIDataset(val_rows, eval_tf), batch_size=args.batch, shuffle=False, num_workers=args.workers, pin_memory=device.type == "cuda")
     test_loader = DataLoader(MRIDataset(test_rows, eval_tf), batch_size=args.batch, shuffle=False, num_workers=args.workers, pin_memory=device.type == "cuda") if test_rows else None
 
@@ -120,13 +138,14 @@ def main():
     best, best_path, history = -1.0, out / "best_auc_model.pt", []
     for epoch in range(1, args.epochs + 1):
         train_loss = train_epoch(model, train_loader, opt, scaler, device)
-        val_metrics, val_ids, val_y, val_p, val_pred = eval_mri(model, val_loader, device, args.threshold)
+        val_metrics, val_ids, val_y, val_logits, val_p, val_pred = eval_mri(model, val_loader, device, args.threshold)
         history.append({"epoch": epoch, "train_loss": round_float(train_loss), "val_loss": round_float(val_metrics["loss"]), "val_acc": round_float(val_metrics["accuracy"]), "val_f1": round_float(val_metrics["f1"]), "val_auc": round_float(val_metrics["auc"])})
         print(f"Epoch {epoch:03d}/{args.epochs} | train_loss={train_loss:.3f} | val_auc={val_metrics['auc']:.3f}")
         if val_metrics["auc"] > best:
             best = val_metrics["auc"]
             save_ckpt(best_path, model, epoch, val_metrics, args)
             save_preds(out / "val_predictions_best_auc.csv", val_ids, val_y, val_p, val_pred, "id")
+            save_mri_teacher_outputs(out / "val_teacher_outputs_best_auc.csv", val_ids, val_y, val_logits, val_p, val_pred)
 
     with open(out / "training_history.csv", "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=list(history[0].keys()))
@@ -136,12 +155,13 @@ def main():
     ckpt = torch.load(best_path, map_location=device, weights_only=False)
     unwrap(model).load_state_dict(ckpt["model_state"])
     all_metrics = {}
-    for split, loader in [("val", val_loader), ("test", test_loader)]:
+    for split, loader in [("train", train_eval_loader), ("val", val_loader), ("test", test_loader)]:
         if loader is None:
             continue
-        metrics, ids, y, p, pred = eval_mri(model, loader, device, args.threshold)
+        metrics, ids, y, logits, p, pred = eval_mri(model, loader, device, args.threshold)
         all_metrics[split] = round_metrics(metrics)
         save_preds(out / f"{split}_predictions_best_auc.csv", ids, y, p, pred, "id")
+        save_mri_teacher_outputs(out / f"{split}_teacher_outputs_best_auc.csv", ids, y, logits, p, pred)
         print(f"{split}: {round_metrics(metrics)}")
         print(confusion_matrix(y, pred, labels=[0, 1]))
     with open(out / "metrics.json", "w", encoding="utf-8") as f:
