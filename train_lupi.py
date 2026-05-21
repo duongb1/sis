@@ -61,7 +61,7 @@ def load_mri_teacher(path, device, multi_gpu):
 
 
 @torch.no_grad()
-def compute_mri_logits(text_records, mri_records, teacher, device, batch_size, workers, threshold):
+def compute_mri_logits(text_records, mri_records, teacher, device, batch_size, workers):
     tf = transforms.Compose(
         [
             transforms.Resize((224, 224)),
@@ -84,27 +84,34 @@ def compute_mri_logits(text_records, mri_records, teacher, device, batch_size, w
             labels_by_id[item_id] = int(label)
 
     text_ids = {r["id"] for r in text_records}
-    teacher_logits, eval_rows = {}, []
+    teacher_logits = {}
     for item_id, values in logits_by_id.items():
         if item_id not in text_ids:
             continue
         z = float(np.mean(values))
-        p_co = 1.0 / (1.0 + np.exp(-z))
-        y = labels_by_id[item_id]
         teacher_logits[item_id] = [-z / 2.0, z / 2.0]
-        eval_rows.append((item_id, y, p_co))
+    return teacher_logits
 
-    labels = np.array([r[1] for r in eval_rows], dtype=np.int64)
-    probs = np.array([r[2] for r in eval_rows], dtype=np.float32)
-    preds = (probs >= threshold).astype(np.int64)
-    stats = {
+
+def teacher_stats_for_records(records, teacher_logits, threshold):
+    rows = [row for row in records if row["id"] in teacher_logits]
+    labels = np.array([row["label"] for row in rows], dtype=np.int64)
+    logits = np.array([teacher_logits[row["id"]] for row in rows], dtype=np.float32)
+    if len(rows):
+        exp_logits = np.exp(logits - logits.max(axis=1, keepdims=True))
+        probs = exp_logits[:, 1] / exp_logits.sum(axis=1)
+        preds = (probs >= threshold).astype(np.int64)
+    else:
+        probs = np.array([], dtype=np.float32)
+        preds = np.array([], dtype=np.int64)
+    return {
         "teacher_accuracy": float(accuracy_score(labels, preds)) if len(labels) else float("nan"),
         "teacher_f1": float(f1_score(labels, preds, zero_division=0)) if len(labels) else float("nan"),
         "teacher_auc": float(roc_auc_score(labels, probs)) if len(np.unique(labels)) == 2 else float("nan"),
         "teacher_num_patients": int(len(labels)),
         "teacher_correct_patients": int((preds == labels).sum()) if len(labels) else 0,
+        "teacher_missing_patients": int(len(records) - len(rows)),
     }
-    return teacher_logits, stats
 
 
 def shuffle_teacher_for_train(teacher_logits, train_rows, seed):
@@ -201,9 +208,14 @@ def main():
     print(f"Paired text patients: {len(text_records)} | Train: {len(train_rows)} | Val: {len(val_rows)} | Test: {len(test_rows)}")
 
     teacher = load_mri_teacher(args.teacher, device, multi_gpu)
-    teacher_logits, teacher_stats = compute_mri_logits(text_records, mri_records, teacher, device, args.batch_mri, args.workers, args.threshold)
+    teacher_logits = compute_mri_logits(text_records, mri_records, teacher, device, args.batch_mri, args.workers)
+    teacher_stats = {
+        "train": round_metrics(teacher_stats_for_records(train_rows, teacher_logits, args.threshold)),
+        "val": round_metrics(teacher_stats_for_records(val_rows, teacher_logits, args.threshold)),
+        "test": round_metrics(teacher_stats_for_records(test_rows, teacher_logits, args.threshold)),
+    }
     with open(out / "teacher_stats.json", "w", encoding="utf-8") as f:
-        json.dump(round_metrics(teacher_stats), f, ensure_ascii=False, indent=2)
+        json.dump(teacher_stats, f, ensure_ascii=False, indent=2)
     del teacher
     if device.type == "cuda":
         torch.cuda.empty_cache()
@@ -213,7 +225,9 @@ def main():
         teacher_logits = shuffle_teacher_for_train(teacher_logits, train_rows, args.seed)
     if not train_rows or not val_rows:
         raise RuntimeError("Need non-empty train and val records.")
-    print(f"Teacher stats: {round_metrics(teacher_stats)}")
+    print(f"Teacher train stats: {teacher_stats['train']}")
+    print(f"Teacher val stats: {teacher_stats['val']}")
+    print(f"Teacher test stats: {teacher_stats['test']}")
     print(f"LUPI train rows with MRI signal: {len(train_rows)}")
 
     tokenizer = AutoTokenizer.from_pretrained(args.student, use_fast=False)
