@@ -11,7 +11,6 @@ Large data folders, model checkpoints, and generated outputs are intentionally e
 - `train_pair_text.py`: paired text-only PhoBERT classifier on patient `.txt` files inside image folders.
 - `eval_img_text.py`: evaluate a text checkpoint on patient `.txt` files inside the image test folder.
 - `kd_mri_text.py`: MRI teacher to paired-text student KD.
-- `kd_text_pair.py`: large-text teacher to paired-text student KD.
 - `train_lupi.py`: large-text checkpoint to paired-text LUPI with MRI-guided CE sample weights.
 
 ## Shared Code
@@ -20,6 +19,7 @@ Large data folders, model checkpoints, and generated outputs are intentionally e
 - `sislib/text_data.py`: text record collectors and datasets.
 - `sislib/text_train.py`: text CE/KD train loops and evaluation.
 - `sislib/mri.py`: MRI pair collectors, transforms, datasets, and ResNet factory.
+- `sislib/mri_teacher.py`: MRI teacher checkpoint loading, patient-level logits, split stats, and shuffled controls.
 - `sislib/metrics.py`: metrics and prediction CSV writers.
 
 ## Examples
@@ -29,7 +29,6 @@ python train_text.py --data /kaggle/input/datasets/duongb/cthsis/texts
 python train_pair_text.py --images /kaggle/input/datasets/duongb/cthsis/images
 python eval_img_text.py --images /kaggle/input/datasets/duongb/cthsis/images
 python train_mri.py --images /kaggle/input/datasets/duongb/cthsis/images
-python kd_text_pair.py --images /kaggle/input/datasets/duongb/cthsis/images
 python kd_mri_text.py --images /kaggle/input/datasets/duongb/cthsis/images
 python train_lupi.py --images /kaggle/input/datasets/duongb/cthsis/images
 python train_lupi.py --alpha-lupi 0.0 --images /kaggle/input/datasets/duongb/cthsis/images

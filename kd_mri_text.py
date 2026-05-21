@@ -1,20 +1,18 @@
 import argparse
 import csv
 import json
-import random
 from pathlib import Path
 
 import numpy as np
 import torch
-from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, roc_auc_score
+from sklearn.metrics import confusion_matrix
 from torch.utils.data import DataLoader
-from torchvision import transforms
-from tqdm import tqdm
 from transformers import AutoModelForSequenceClassification, AutoTokenizer, get_linear_schedule_with_warmup
 
 from sislib.common import get_device, resolve_max_len, round_float, round_metrics, seed_all, split_records, to_device, unwrap
 from sislib.metrics import save_preds
-from sislib.mri import MRIDataset, collect_pairs, resnet50_binary
+from sislib.mri import collect_pairs
+from sislib.mri_teacher import compute_mri_logits, load_mri_teacher, shuffle_teacher_for_train, split_teacher_stats
 from sislib.text_data import TextDataset, collect_paired_text, save_records
 from sislib.text_train import eval_text, kd_epoch, kd_loss_fn
 
@@ -36,7 +34,6 @@ def parse_args():
     p.add_argument("--kd", choices=["binary", "kl"], default="binary")
     p.add_argument("--temp", type=float, default=2.0)
     p.add_argument("--ce-warmup", type=int, default=0)
-    p.add_argument("--teacher-correct-only", action="store_true")
     p.add_argument("--shuffle-teacher", action="store_true")
     p.add_argument("--threshold", type=float, default=0.5)
     p.add_argument("--seed", type=int, default=42)
@@ -45,87 +42,6 @@ def parse_args():
     p.add_argument("--cpu", action="store_true")
     p.add_argument("--no-mgpu", action="store_true")
     return p.parse_args()
-
-
-def clean_state_dict(state):
-    return {k.replace("module.", "", 1): v for k, v in state.items()} if any(k.startswith("module.") for k in state) else state
-
-
-def load_mri(path, device, multi_gpu):
-    ckpt = torch.load(path, map_location=device, weights_only=False)
-    state = ckpt["model_state"] if isinstance(ckpt, dict) and "model_state" in ckpt else ckpt
-    model = resnet50_binary()
-    model.load_state_dict(clean_state_dict(state))
-    return to_device(model.eval(), device, multi_gpu)
-
-
-@torch.no_grad()
-def mri_teacher_logits(text_records, mri_records, teacher, device, batch_size, workers):
-    tf = transforms.Compose([
-        transforms.Resize((224, 224)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-    ])
-    loader = DataLoader(MRIDataset(mri_records, tf), batch_size=batch_size, shuffle=False, num_workers=workers, pin_memory=device.type == "cuda")
-    by_id = {}
-    for images, _, ids in tqdm(loader, desc="Computing MRI teacher logits"):
-        logits = teacher(images.to(device, non_blocking=True)).squeeze(1).detach().cpu().numpy()
-        for logit, item_id in zip(logits, ids):
-            by_id.setdefault(item_id, []).append(float(logit))
-
-    text_ids = {r["id"] for r in text_records}
-    logits_2 = {}
-    for item_id, vals in by_id.items():
-        if item_id not in text_ids:
-            continue
-        z = float(np.mean(vals))
-        logits_2[item_id] = [-z / 2.0, z / 2.0]
-    return logits_2
-
-
-def teacher_stats_for_records(records, teacher_logits, threshold):
-    rows = [row for row in records if row["id"] in teacher_logits]
-    labels = np.array([row["label"] for row in rows], dtype=np.int64)
-    logits = np.array([teacher_logits[row["id"]] for row in rows], dtype=np.float32)
-    if len(rows):
-        exp_logits = np.exp(logits - logits.max(axis=1, keepdims=True))
-        probs = exp_logits[:, 1] / exp_logits.sum(axis=1)
-        preds = (probs >= threshold).astype(np.int64)
-    else:
-        probs = np.array([], dtype=np.float32)
-        preds = np.array([], dtype=np.int64)
-    return {
-        "teacher_accuracy": float(accuracy_score(labels, preds)) if len(labels) else float("nan"),
-        "teacher_f1": float(f1_score(labels, preds, zero_division=0)) if len(labels) else float("nan"),
-        "teacher_auc": float(roc_auc_score(labels, probs)) if len(np.unique(labels)) == 2 else float("nan"),
-        "teacher_num_patients": int(len(labels)),
-        "teacher_correct_patients": int((preds == labels).sum()) if len(labels) else 0,
-        "teacher_missing_patients": int(len(records) - len(rows)),
-    }
-
-
-def teacher_correct_ids(records, teacher_logits, threshold):
-    correct = set()
-    for row in records:
-        if row["id"] not in teacher_logits:
-            continue
-        logits = np.array(teacher_logits[row["id"]], dtype=np.float32)
-        exp_logits = np.exp(logits - logits.max())
-        p_co = exp_logits[1] / exp_logits.sum()
-        if int(p_co >= threshold) == row["label"]:
-            correct.add(row["id"])
-    return correct
-
-
-def shuffle_teacher_for_train(teacher_logits, train_rows, seed):
-    rng = random.Random(seed)
-    ids = [row["id"] for row in train_rows if row["id"] in teacher_logits]
-    shuffled = ids[:]
-    rng.shuffle(shuffled)
-    out = dict(teacher_logits)
-    for target_id, source_id in zip(ids, shuffled):
-        out[target_id] = teacher_logits[source_id]
-    return out
 
 
 def main():
@@ -144,19 +60,10 @@ def main():
     print(f"Image root: {image_root.resolve()}")
     print(f"Text patients: {len(text_records)} | Train: {len(train_rows)} | Val: {len(val_rows)} | Test: {len(test_rows)}")
 
-    teacher = load_mri(args.teacher, device, multi_gpu)
-    logits = mri_teacher_logits(text_records, mri_records, teacher, device, args.batch_mri, args.workers)
-    stats = {
-        "train": round_metrics(teacher_stats_for_records(train_rows, logits, args.threshold)),
-        "val": round_metrics(teacher_stats_for_records(val_rows, logits, args.threshold)),
-        "test": round_metrics(teacher_stats_for_records(test_rows, logits, args.threshold)),
-    }
-    if args.teacher_correct_only:
-        correct = teacher_correct_ids(train_rows, logits, args.threshold)
-        train_rows = [r for r in train_rows if r["id"] in logits]
-        train_rows = [r for r in train_rows if r["id"] in correct]
-    else:
-        train_rows = [r for r in train_rows if r["id"] in logits]
+    teacher = load_mri_teacher(args.teacher, device, multi_gpu)
+    logits = compute_mri_logits(text_records, mri_records, teacher, device, args.batch_mri, args.workers)
+    stats = split_teacher_stats(train_rows, val_rows, test_rows, logits, args.threshold)
+    train_rows = [r for r in train_rows if r["id"] in logits]
     if args.shuffle_teacher:
         logits = shuffle_teacher_for_train(logits, train_rows, args.seed)
     if not train_rows or not val_rows:
@@ -209,7 +116,6 @@ def main():
                         "alpha": args.alpha,
                         "kd_loss": args.kd,
                         "temperature": args.temp,
-                        "teacher_correct_only": args.teacher_correct_only,
                         "shuffle_teacher": args.shuffle_teacher,
                         "max_length": max_len,
                     },

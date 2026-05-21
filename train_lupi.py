@@ -1,21 +1,20 @@
 import argparse
 import csv
 import json
-import random
 from pathlib import Path
 
 import numpy as np
 import torch
 import torch.nn.functional as F
-from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, roc_auc_score
+from sklearn.metrics import confusion_matrix
 from torch.utils.data import DataLoader
-from torchvision import transforms
 from tqdm import tqdm
 from transformers import AutoModelForSequenceClassification, AutoTokenizer, get_linear_schedule_with_warmup
 
 from sislib.common import get_device, resolve_max_len, round_float, round_metrics, seed_all, split_records, to_device, unwrap
 from sislib.metrics import save_preds
-from sislib.mri import MRIDataset, collect_pairs, resnet50_binary
+from sislib.mri import collect_pairs
+from sislib.mri_teacher import compute_mri_logits, load_mri_teacher, shuffle_teacher_for_train, split_teacher_stats
 from sislib.text_data import TextDataset, collect_paired_text, save_records
 from sislib.text_train import ce_epoch, eval_text
 
@@ -46,85 +45,6 @@ def parse_args():
     return p.parse_args()
 
 
-def clean_state_dict(state):
-    if any(k.startswith("module.") for k in state):
-        return {k.replace("module.", "", 1): v for k, v in state.items()}
-    return state
-
-
-def load_mri_teacher(path, device, multi_gpu):
-    ckpt = torch.load(path, map_location=device, weights_only=False)
-    state = ckpt["model_state"] if isinstance(ckpt, dict) and "model_state" in ckpt else ckpt
-    model = resnet50_binary()
-    model.load_state_dict(clean_state_dict(state))
-    return to_device(model.eval(), device, multi_gpu)
-
-
-@torch.no_grad()
-def compute_mri_logits(text_records, mri_records, teacher, device, batch_size, workers):
-    tf = transforms.Compose(
-        [
-            transforms.Resize((224, 224)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ]
-    )
-    loader = DataLoader(
-        MRIDataset(mri_records, tf),
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=workers,
-        pin_memory=device.type == "cuda",
-    )
-    logits_by_id, labels_by_id = {}, {}
-    for images, labels, ids in tqdm(loader, desc="Computing MRI teacher logits"):
-        logits = teacher(images.to(device, non_blocking=True)).squeeze(1).detach().cpu().numpy()
-        for logit, label, item_id in zip(logits, labels, ids):
-            logits_by_id.setdefault(item_id, []).append(float(logit))
-            labels_by_id[item_id] = int(label)
-
-    text_ids = {r["id"] for r in text_records}
-    teacher_logits = {}
-    for item_id, values in logits_by_id.items():
-        if item_id not in text_ids:
-            continue
-        z = float(np.mean(values))
-        teacher_logits[item_id] = [-z / 2.0, z / 2.0]
-    return teacher_logits
-
-
-def teacher_stats_for_records(records, teacher_logits, threshold):
-    rows = [row for row in records if row["id"] in teacher_logits]
-    labels = np.array([row["label"] for row in rows], dtype=np.int64)
-    logits = np.array([teacher_logits[row["id"]] for row in rows], dtype=np.float32)
-    if len(rows):
-        exp_logits = np.exp(logits - logits.max(axis=1, keepdims=True))
-        probs = exp_logits[:, 1] / exp_logits.sum(axis=1)
-        preds = (probs >= threshold).astype(np.int64)
-    else:
-        probs = np.array([], dtype=np.float32)
-        preds = np.array([], dtype=np.int64)
-    return {
-        "teacher_accuracy": float(accuracy_score(labels, preds)) if len(labels) else float("nan"),
-        "teacher_f1": float(f1_score(labels, preds, zero_division=0)) if len(labels) else float("nan"),
-        "teacher_auc": float(roc_auc_score(labels, probs)) if len(np.unique(labels)) == 2 else float("nan"),
-        "teacher_num_patients": int(len(labels)),
-        "teacher_correct_patients": int((preds == labels).sum()) if len(labels) else 0,
-        "teacher_missing_patients": int(len(records) - len(rows)),
-    }
-
-
-def shuffle_teacher_for_train(teacher_logits, train_rows, seed):
-    rng = random.Random(seed)
-    ids = [row["id"] for row in train_rows if row["id"] in teacher_logits]
-    shuffled = ids[:]
-    rng.shuffle(shuffled)
-    out = dict(teacher_logits)
-    for target_id, source_id in zip(ids, shuffled):
-        out[target_id] = teacher_logits[source_id]
-    return out
-
-
 def lupi_disagreement_loss(student_logits, teacher_logits, labels, alpha, weight_min, weight_max):
     ce = F.cross_entropy(student_logits, labels, reduction="none")
     with torch.no_grad():
@@ -144,7 +64,7 @@ def lupi_epoch(model, loader, optimizer, scheduler, scaler, device, args):
     total_count = 0
     optimizer.zero_grad(set_to_none=True)
     for step, batch in enumerate(tqdm(loader, desc="Training LUPI", leave=False), start=1):
-        ids = batch.pop("id")
+        batch.pop("id")
         labels = batch.pop("labels").to(device, non_blocking=True)
         teacher_logits = batch.pop("teacher_logits").to(device, non_blocking=True)
         inputs = {k: v.to(device, non_blocking=True) for k, v in batch.items()}
@@ -165,7 +85,6 @@ def lupi_epoch(model, loader, optimizer, scheduler, scaler, device, args):
         total_ce += ce.item() * bs
         total_weight += weight.item() * bs
         total_count += bs
-        del ids
     denom = max(total_count, 1)
     return float(total_loss / denom), float(total_ce / denom), float(total_weight / denom)
 
@@ -216,11 +135,7 @@ def main():
     if use_lupi:
         teacher = load_mri_teacher(args.teacher, device, multi_gpu)
         teacher_logits = compute_mri_logits(text_records, mri_records, teacher, device, args.batch_mri, args.workers)
-        teacher_stats = {
-            "train": round_metrics(teacher_stats_for_records(train_rows, teacher_logits, args.threshold)),
-            "val": round_metrics(teacher_stats_for_records(val_rows, teacher_logits, args.threshold)),
-            "test": round_metrics(teacher_stats_for_records(test_rows, teacher_logits, args.threshold)),
-        }
+        teacher_stats = split_teacher_stats(train_rows, val_rows, test_rows, teacher_logits, args.threshold)
         with open(out / "teacher_stats.json", "w", encoding="utf-8") as f:
             json.dump(teacher_stats, f, ensure_ascii=False, indent=2)
         del teacher
