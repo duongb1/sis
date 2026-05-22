@@ -9,7 +9,6 @@ Large data folders, model checkpoints, and generated outputs are intentionally e
 - `train_mri.py`: MRI-only ResNet50 teacher. Saves `best_auc_model.pt`.
 - `train_text.py`: large text-only PhoBERT on `texts/{train,val,test}/{co,khong}/*.txt`.
 - `train_pair_text.py`: paired text-only PhoBERT on patient `.txt` files inside image folders.
-- `eval_pair_text.py`: evaluate any text checkpoint directly on paired text splits.
 - `train_hard_negative_reweight.py`: large-text checkpoint fine-tuning with MRI-guided hard-negative sample weights.
 - `run_all.py`: run the synchronized pipeline and print one summary table.
 
@@ -24,14 +23,16 @@ Large data folders, model checkpoints, and generated outputs are intentionally e
 
 ## Default Pipeline
 
-By default, `run_all.py` runs the practical main pipeline for the hard-negative question:
+By default, `run_all.py` runs the large-text adaptation and MRI hard-negative weight sweep:
 
-1. `MRI-only teacher`: train MRI teacher on paired MRI train and test on paired test 280.
-2. `Paired-only CE`: PhoBERT baseline on paired text train and paired test 280.
-3. `Large-text CE`: train PhoBERT on the large text cohort.
-4. `Large-text direct`: evaluate the large-text checkpoint directly on paired train/val/test, without paired fine-tuning.
-5. `Large-text -> paired CE`: ordinary paired fine-tuning from the large-text checkpoint.
-6. `MRI hard-neg reweight`: fine-tune from the large-text checkpoint with MRI-guided hard-negative weights.
+1. `Large-text -> paired CE`
+2. `MRI hard-neg weight 1.25`
+3. `MRI hard-neg weight 1.5`
+4. `MRI hard-neg weight 2.0`
+5. `MRI hard-neg weight 1.5 + positive weight 1.2`
+6. `MRI hard-neg weight 2.0 + positive weight 1.2`
+
+`run_all.py` still trains the MRI teacher and large-text checkpoint first because those checkpoints are required dependencies.
 
 ```bash
 python run_all.py \
@@ -58,9 +59,9 @@ Default weighting on paired train:
 
 ```text
 if y = 0 and p_text >= 0.7 and p_mri <= 0.3:
-    weight = 3.0
-elif y = 0 and p_text >= 0.7 and p_mri > 0.5:
-    weight = 0.5
+    weight = hard_negative_weight
+elif y = 1:
+    weight = positive_weight
 else:
     weight = 1.0
 ```
@@ -85,5 +86,4 @@ The script saves `sample_weights.csv` with `p_text_co`, `p_mri_co`, assigned wei
 python train_mri.py --images /kaggle/input/datasets/duongb/cthsis/images
 python train_text.py --data /kaggle/input/datasets/duongb/cthsis/texts
 python train_pair_text.py --images /kaggle/input/datasets/duongb/cthsis/images
-python eval_pair_text.py --model /kaggle/working/sis_runs/02_large_text_ce/best_auc_phobert --images /kaggle/input/datasets/duongb/cthsis/images --splits train val test
 ```

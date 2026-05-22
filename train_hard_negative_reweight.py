@@ -39,7 +39,8 @@ def parse_args():
     p.add_argument("--mri-negative-threshold", type=float, default=0.3)
     p.add_argument("--mri-ambiguous-threshold", type=float, default=0.5)
     p.add_argument("--hard-negative-weight", type=float, default=3.0)
-    p.add_argument("--ambiguous-negative-weight", type=float, default=0.5)
+    p.add_argument("--ambiguous-negative-weight", type=float, default=1.0)
+    p.add_argument("--positive-weight", type=float, default=1.0)
     p.add_argument("--normal-weight", type=float, default=1.0)
     p.add_argument("--shuffle-teacher", action="store_true")
     p.add_argument("--seed", type=int, default=42)
@@ -112,7 +113,7 @@ def maybe_shuffle_probs(probs, rows, seed):
 
 def build_sample_weights(rows, text_probs, mri_probs, args):
     weights, details = {}, []
-    counts = {"hard_negative": 0, "ambiguous_negative": 0, "normal": 0, "missing_signal": 0}
+    counts = {"hard_negative": 0, "ambiguous_negative": 0, "positive": 0, "normal": 0, "missing_signal": 0}
     for row in rows:
         item_id = row["id"]
         label = row["label"]
@@ -120,7 +121,10 @@ def build_sample_weights(rows, text_probs, mri_probs, args):
         p_mri = mri_probs.get(item_id)
         rule = "normal"
         weight = args.normal_weight
-        if p_text is None or p_mri is None:
+        if label == 1 and args.positive_weight != args.normal_weight:
+            rule = "positive"
+            weight = args.positive_weight
+        elif p_text is None or p_mri is None:
             rule = "missing_signal"
         elif label == 0 and p_text >= args.text_fp_threshold and p_mri <= args.mri_negative_threshold:
             rule = "hard_negative"
