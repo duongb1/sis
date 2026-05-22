@@ -21,6 +21,7 @@ if str(ROOT) not in sys.path:
 
 from sislib.common import get_device, resolve_max_len, round_float, round_metrics, seed_all, to_device, unwrap
 from sislib.metrics import cls_metrics
+from sislib.text_data import collect_paired_text
 from sislib.text_train import ce_epoch, eval_text
 
 
@@ -29,12 +30,14 @@ LABEL_MAP = {"khong": 0, "không": 0, "0": 0, 0: 0, "co": 1, "có": 1, "1": 1, 1
 
 def parse_args():
     p = argparse.ArgumentParser(description="Run OOF stacking meta-classifier for paired text classification.")
-    p.add_argument("--paired_train_csv", required=True)
-    p.add_argument("--paired_val_csv", required=True)
-    p.add_argument("--paired_test_csv", required=True)
+    p.add_argument("--images", default=None, help="Optional paired image root. If set, paired split CSVs are generated from patient txt files.")
+    p.add_argument("--paired_train_csv", default=None)
+    p.add_argument("--paired_val_csv", default=None)
+    p.add_argument("--paired_test_csv", default=None)
     p.add_argument("--large_text_ckpt", required=True)
     p.add_argument("--paired_text_model_name_or_ckpt", required=True)
-    p.add_argument("--mri_teacher_pred_csv", required=True)
+    p.add_argument("--mri_teacher_pred_csv", default=None)
+    p.add_argument("--mri_teacher_dir", default=None, help="Optional train_mri.py output dir containing *_teacher_outputs_best_auc.csv.")
     p.add_argument("--output_dir", required=True)
     p.add_argument("--n_folds", type=int, default=5)
     p.add_argument("--seed", type=int, default=42)
@@ -93,22 +96,72 @@ def load_split(path):
     return df
 
 
-def load_data(args):
-    train = load_split(args.paired_train_csv)
-    val = load_split(args.paired_val_csv)
-    test = load_split(args.paired_test_csv)
-    mri = pd.read_csv(args.mri_teacher_pred_csv)
+def records_to_frame(records):
+    return pd.DataFrame(
+        [
+            {"sample_id": row["id"], "text": row["text"], "label": row["label"]}
+            for row in records
+        ]
+    )
+
+
+def load_splits(args):
+    if args.images:
+        records, missing, _ = collect_paired_text(args.images)
+        if missing:
+            missing_path = Path(args.output_dir) / "missing_paired_text_files.txt"
+            missing_path.write_text("\n".join(missing), encoding="utf-8")
+            print(f"Missing paired text files: {len(missing)} | saved {missing_path}")
+        frames = {}
+        for split in ["train", "val", "test"]:
+            rows = [row for row in records if row["split"] == split]
+            frames[split] = records_to_frame(rows)
+            frames[split].to_csv(Path(args.output_dir) / f"paired_{split}.csv", index=False)
+        return frames["train"], frames["val"], frames["test"]
+
+    missing = [name for name, value in [
+        ("--paired_train_csv", args.paired_train_csv),
+        ("--paired_val_csv", args.paired_val_csv),
+        ("--paired_test_csv", args.paired_test_csv),
+    ] if not value]
+    if missing:
+        raise ValueError(f"Provide --images or all paired CSV arguments. Missing: {', '.join(missing)}")
+    return load_split(args.paired_train_csv), load_split(args.paired_val_csv), load_split(args.paired_test_csv)
+
+
+def load_mri_predictions(args):
+    if args.mri_teacher_pred_csv:
+        mri = pd.read_csv(args.mri_teacher_pred_csv)
+    elif args.mri_teacher_dir:
+        root = Path(args.mri_teacher_dir)
+        parts = []
+        for split in ["train", "val", "test"]:
+            path = root / f"{split}_teacher_outputs_best_auc.csv"
+            if not path.exists():
+                raise FileNotFoundError(f"Missing MRI teacher output: {path}")
+            parts.append(pd.read_csv(path))
+        mri = pd.concat(parts, axis=0, ignore_index=True)
+        mri.to_csv(Path(args.output_dir) / "mri_teacher_predictions_merged.csv", index=False)
+    else:
+        raise ValueError("Provide --mri_teacher_pred_csv or --mri_teacher_dir.")
+
     if "sample_id" not in mri.columns and "id" in mri.columns:
         mri = mri.rename(columns={"id": "sample_id"})
     if "p_mri" not in mri.columns and "prob_co" in mri.columns:
         mri = mri.rename(columns={"prob_co": "p_mri"})
     if not {"sample_id", "p_mri"}.issubset(mri.columns):
-        raise ValueError("mri_teacher_pred_csv must contain sample_id and p_mri columns.")
+        raise ValueError("MRI predictions must contain sample_id,p_mri or id,prob_co columns.")
     mri = mri[["sample_id", "p_mri"]].copy()
     mri["sample_id"] = mri["sample_id"].astype(str)
     mri["p_mri"] = mri["p_mri"].astype(float)
     if mri["sample_id"].duplicated().any():
-        raise ValueError("mri_teacher_pred_csv contains duplicated sample_id.")
+        raise ValueError("MRI predictions contain duplicated sample_id.")
+    return mri
+
+
+def load_data(args):
+    train, val, test = load_splits(args)
+    mri = load_mri_predictions(args)
     return train, val, test, mri
 
 

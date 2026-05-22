@@ -5,12 +5,14 @@ import sys
 
 def parse_args():
     p = argparse.ArgumentParser(description="Run the stacking meta-classifier pipeline.")
-    p.add_argument("--paired_train_csv", required=True)
-    p.add_argument("--paired_val_csv", required=True)
-    p.add_argument("--paired_test_csv", required=True)
+    p.add_argument("--images", default=None)
+    p.add_argument("--paired_train_csv", default=None)
+    p.add_argument("--paired_val_csv", default=None)
+    p.add_argument("--paired_test_csv", default=None)
     p.add_argument("--large_text_ckpt", required=True)
     p.add_argument("--paired_text_model_name_or_ckpt", default="vinai/phobert-base")
-    p.add_argument("--mri_teacher_pred_csv", required=True)
+    p.add_argument("--mri_teacher_pred_csv", default=None)
+    p.add_argument("--mri_teacher_dir", default=None)
     p.add_argument("--output_dir", required=True)
     p.add_argument("--n_folds", type=int, default=5)
     p.add_argument("--seed", type=int, default=42)
@@ -33,12 +35,8 @@ def main():
     cmd = [
         sys.executable,
         "scripts/run_stacking_meta_classifier.py",
-        "--paired_train_csv", args.paired_train_csv,
-        "--paired_val_csv", args.paired_val_csv,
-        "--paired_test_csv", args.paired_test_csv,
         "--large_text_ckpt", args.large_text_ckpt,
         "--paired_text_model_name_or_ckpt", args.paired_text_model_name_or_ckpt,
-        "--mri_teacher_pred_csv", args.mri_teacher_pred_csv,
         "--output_dir", args.output_dir,
         "--n_folds", str(args.n_folds),
         "--seed", str(args.seed),
@@ -52,6 +50,18 @@ def main():
         "--workers", str(args.workers),
         "--accum", str(args.accum),
     ]
+    if args.images:
+        cmd.extend(["--images", args.images])
+    if args.paired_train_csv:
+        cmd.extend(["--paired_train_csv", args.paired_train_csv])
+    if args.paired_val_csv:
+        cmd.extend(["--paired_val_csv", args.paired_val_csv])
+    if args.paired_test_csv:
+        cmd.extend(["--paired_test_csv", args.paired_test_csv])
+    if args.mri_teacher_pred_csv:
+        cmd.extend(["--mri_teacher_pred_csv", args.mri_teacher_pred_csv])
+    if args.mri_teacher_dir:
+        cmd.extend(["--mri_teacher_dir", args.mri_teacher_dir])
     if args.cpu:
         cmd.append("--cpu")
     if args.no_mgpu:

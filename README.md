@@ -6,6 +6,19 @@ Code for paired text stacking/meta-classifier experiments without test leakage.
 
 ```bash
 python scripts/run_stacking_meta_classifier.py \
+  --images /kaggle/input/datasets/duongb/cthsis/images \
+  --large_text_ckpt /path/to/large_text/best_auc_phobert \
+  --paired_text_model_name_or_ckpt vinai/phobert-base \
+  --mri_teacher_dir /kaggle/working/sis_runs/00_mri_teacher \
+  --output_dir /kaggle/working/stacking_run
+```
+
+`run_all.py` is a thin wrapper around the same script and accepts the same required paths.
+
+You can also pass explicit CSVs instead of `--images`:
+
+```bash
+python scripts/run_stacking_meta_classifier.py \
   --paired_train_csv /path/to/paired_train.csv \
   --paired_val_csv /path/to/paired_val.csv \
   --paired_test_csv /path/to/paired_test.csv \
@@ -14,8 +27,6 @@ python scripts/run_stacking_meta_classifier.py \
   --mri_teacher_pred_csv /path/to/mri_teacher_predictions.csv \
   --output_dir /kaggle/working/stacking_run
 ```
-
-`run_all.py` is a thin wrapper around the same script and accepts the same required paths.
 
 ## Required CSV Columns
 
@@ -27,6 +38,8 @@ sample_id,text,label
 
 `id` is also accepted as an alias for `sample_id`.
 
+If `--images` is provided, these CSVs are generated automatically from patient `.txt` files inside the image folders.
+
 MRI teacher prediction CSV:
 
 ```text
@@ -34,6 +47,14 @@ sample_id,p_mri
 ```
 
 `id,prob_co` from `train_mri.py` teacher output is also accepted.
+
+If `--mri_teacher_dir` is provided, the script automatically merges:
+
+```text
+train_teacher_outputs_best_auc.csv
+val_teacher_outputs_best_auc.csv
+test_teacher_outputs_best_auc.csv
+```
 
 Labels may be `0/1`, `khong/co`, or `không/có`.
 
