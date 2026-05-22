@@ -11,9 +11,6 @@ Large data folders, model checkpoints, and generated outputs are intentionally e
 - `train_pair_text.py`: paired text-only PhoBERT on patient `.txt` files inside image folders.
 - `eval_pair_text.py`: evaluate any text checkpoint directly on paired text splits.
 - `train_hard_negative_reweight.py`: large-text checkpoint fine-tuning with MRI-guided hard-negative sample weights.
-- `kd_mri_text.py`: MRI teacher to paired-text student KD, kept for appendix experiments.
-- `train_lupi.py`: MRI-guided LUPI sample weighting, kept for appendix experiments.
-- `train_dual_mri_align.py`: dual-stream auxiliary MRI feature alignment, kept for appendix experiments.
 - `run_all.py`: run the synchronized pipeline and print one summary table.
 
 ## Shared Code
@@ -22,7 +19,7 @@ Large data folders, model checkpoints, and generated outputs are intentionally e
 - `sislib/text_data.py`: text record collectors and datasets.
 - `sislib/text_train.py`: text CE/KD train loops and evaluation.
 - `sislib/mri.py`: MRI pair collectors, transforms, datasets, and ResNet factory.
-- `sislib/mri_teacher.py`: MRI teacher checkpoint loading, patient-level logits, split stats, and shuffled controls.
+- `sislib/mri_teacher.py`: MRI teacher checkpoint loading, patient-level logits, and split stats.
 - `sislib/metrics.py`: metrics and prediction CSV writers.
 
 ## Default Pipeline
@@ -43,15 +40,7 @@ python run_all.py \
   --out-root /kaggle/working/sis_runs
 ```
 
-Optional controls and appendix runs:
-
-```bash
-python run_all.py --include-control   # add shuffled hard-negative reweighting
-python run_all.py --include-ablation  # add KD/LUPI/Dual/weighted appendix runs
-python run_all.py --include-all       # run main + control + appendix
-```
-
-At the end, `run_all.py` prints tables with `Acc`, `F1`, `AUC`, sensitivity, specificity, and confusion matrix `[[TN, FP], [FN, TP]]`. It also writes:
+At the end, `run_all.py` prints one table with `Acc`, `F1`, `AUC`, sensitivity, specificity, and confusion matrix `[[TN, FP], [FN, TP]]`. It also writes:
 
 - `/kaggle/working/sis_runs/summary_results.csv`
 - `/kaggle/working/sis_runs/summary_results.json`
@@ -88,17 +77,6 @@ python train_hard_negative_reweight.py \
   --lr 1e-5
 ```
 
-Shuffled control:
-
-```bash
-python train_hard_negative_reweight.py \
-  --student /kaggle/working/sis_runs/02_large_text_ce/best_auc_phobert \
-  --teacher /kaggle/working/sis_runs/00_mri_teacher/best_auc_model.pt \
-  --images /kaggle/input/datasets/duongb/cthsis/images \
-  --out /kaggle/working/sis_runs/06_mri_hard_negative_reweight_shuffled \
-  --shuffle-teacher
-```
-
 The script saves `sample_weights.csv` with `p_text_co`, `p_mri_co`, assigned weight, and rule per train patient.
 
 ## Individual Runs
@@ -108,12 +86,4 @@ python train_mri.py --images /kaggle/input/datasets/duongb/cthsis/images
 python train_text.py --data /kaggle/input/datasets/duongb/cthsis/texts
 python train_pair_text.py --images /kaggle/input/datasets/duongb/cthsis/images
 python eval_pair_text.py --model /kaggle/working/sis_runs/02_large_text_ce/best_auc_phobert --images /kaggle/input/datasets/duongb/cthsis/images --splits train val test
-```
-
-Appendix experiments:
-
-```bash
-python kd_mri_text.py --images /kaggle/input/datasets/duongb/cthsis/images
-python train_lupi.py --images /kaggle/input/datasets/duongb/cthsis/images
-python train_dual_mri_align.py --images /kaggle/input/datasets/duongb/cthsis/images
 ```
