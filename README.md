@@ -2,7 +2,48 @@
 
 Code for paired text stacking/meta-classifier experiments without test leakage.
 
-## Main Entrypoint
+## Full Pipeline Entrypoint
+
+Run all required stages once:
+
+```bash
+python run_all.py \
+  --images /kaggle/input/datasets/duongb/cthsis/images \
+  --texts /kaggle/input/datasets/duongb/cthsis/texts \
+  --output_dir /kaggle/working/sis_runs
+```
+
+This runs, in order:
+
+```text
+00_mri_teacher      MRI-only ResNet50 teacher
+01_large_text_ce    Large text-only PhoBERT
+02_paired_text_ce   Paired text-only PhoBERT
+03_stacking         Weighted average and stacking meta-classifier
+```
+
+Existing outputs are skipped by default:
+
+```text
+00_mri_teacher/best_auc_model.pt
+01_large_text_ce/best_auc_phobert
+02_paired_text_ce/best_auc_phobert
+03_stacking/stacking_results.csv
+```
+
+Use `--force` to retrain all stages.
+
+If the large-text checkpoint already exists elsewhere, pass:
+
+```bash
+python run_all.py \
+  --images /kaggle/input/datasets/duongb/cthsis/images \
+  --texts /kaggle/input/datasets/duongb/cthsis/texts \
+  --large_text_ckpt /kaggle/working/sis_runs/01_large_text_ce/best_auc_phobert \
+  --output_dir /kaggle/working/sis_runs
+```
+
+## Stacking Only
 
 ```bash
 python scripts/run_stacking_meta_classifier.py \
