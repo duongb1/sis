@@ -77,6 +77,8 @@ def eval_text(model, loader, device, threshold=0.5, desc="Evaluating"):
     for batch in tqdm(loader, desc=desc, leave=False):
         inputs, batch_ids = batch_to_device(batch, device, "id")
         inputs.pop("teacher_logits", None)
+        inputs.pop("teacher_mri_vec", None)
+        inputs.pop("sample_weight", None)
         labels = inputs["labels"]
         outputs = model(**inputs)
         loss = hf_loss(outputs, labels)

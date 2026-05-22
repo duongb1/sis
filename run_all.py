@@ -38,6 +38,13 @@ def parse_args():
     p.add_argument("--kd-loss", choices=["binary", "kl"], default="binary")
     p.add_argument("--kd-temp", type=float, default=2.0)
     p.add_argument("--class-weight-co", type=float, default=1.2)
+    p.add_argument("--hn-text-threshold", type=float, default=0.7)
+    p.add_argument("--hn-mri-negative-threshold", type=float, default=0.3)
+    p.add_argument("--hn-mri-ambiguous-threshold", type=float, default=0.5)
+    p.add_argument("--hn-hard-weight", type=float, default=3.0)
+    p.add_argument("--hn-ambiguous-weight", type=float, default=0.5)
+    p.add_argument("--hn-epochs", type=int, default=5)
+    p.add_argument("--hn-lr", type=float, default=1e-5)
     p.add_argument("--lupi-alpha", type=float, default=0.2)
     p.add_argument("--lupi-weight-min", type=float, default=0.75)
     p.add_argument("--lupi-weight-max", type=float, default=1.25)
@@ -190,7 +197,13 @@ def summarize_results(out_root, rows):
 def main():
     args = parse_args()
     out_root = Path(args.out_root)
-    out_root.mkdir(parents=True, exist_ok=True)
+    if args.dry_run:
+        try:
+            out_root.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+    else:
+        out_root.mkdir(parents=True, exist_ok=True)
 
     py = sys.executable
     text_common = [
@@ -223,18 +236,20 @@ def main():
 
     mri_dir = out_root / "00_mri_teacher"
     paired_only_dir = out_root / "01_paired_only_ce"
-    paired_kd_dir = out_root / "02_paired_mri_kd"
-    paired_lupi_dir = out_root / "03_paired_lupi"
-    paired_dual_dir = out_root / "04_paired_dual_mri_align"
-    large_text_dir = out_root / "05_large_text_ce"
-    large_to_paired_ce_dir = out_root / "06_large_to_paired_ce"
-    weighted_ce_dir = out_root / "07_large_to_paired_weighted_ce"
-    kd_dir = out_root / "08_large_to_paired_mri_kd"
-    conf_kd_dir = out_root / "09_large_to_paired_mri_kd_conf"
-    lupi_dir = out_root / "10_large_to_paired_lupi"
-    large_dual_dir = out_root / "11_large_to_paired_dual_mri_align"
-    kd_shuffle_dir = out_root / "12_large_to_paired_mri_kd_shuffled"
-    lupi_shuffle_dir = out_root / "13_large_to_paired_lupi_shuffled"
+    large_text_dir = out_root / "02_large_text_ce"
+    large_direct_dir = out_root / "03_large_text_direct_paired"
+    large_to_paired_ce_dir = out_root / "04_large_to_paired_ce"
+    hn_dir = out_root / "05_mri_hard_negative_reweight"
+    hn_shuffle_dir = out_root / "06_mri_hard_negative_reweight_shuffled"
+
+    paired_kd_dir = out_root / "90_paired_mri_kd"
+    paired_lupi_dir = out_root / "91_paired_lupi"
+    paired_dual_dir = out_root / "92_paired_dual_mri_align"
+    weighted_ce_dir = out_root / "93_large_to_paired_weighted_ce"
+    kd_dir = out_root / "94_large_to_paired_mri_kd"
+    conf_kd_dir = out_root / "95_large_to_paired_mri_kd_conf"
+    lupi_dir = out_root / "96_large_to_paired_lupi"
+    large_dual_dir = out_root / "97_large_to_paired_dual_mri_align"
 
     large_ckpt = large_text_dir / "best_auc_phobert"
     mri_ckpt = mri_dir / "best_auc_model.pt"
@@ -267,53 +282,7 @@ def main():
             ],
         ),
         (
-            "2. Paired-only MRI KD: PhoBERT -> paired train + MRI teacher -> paired test 280",
-            [
-                py, "kd_mri_text.py",
-                "--student", args.base_model,
-                "--teacher", str(mri_ckpt),
-                "--out", str(paired_kd_dir),
-                "--alpha", str(args.kd_alpha),
-                "--kd", args.kd_loss,
-                "--temp", str(args.kd_temp),
-                *paired_mri_common,
-                *device_flags,
-            ],
-        ),
-        (
-            "3. Paired-only MRI LUPI: PhoBERT -> paired train + MRI weights -> paired test 280",
-            [
-                py, "train_lupi.py",
-                "--student", args.base_model,
-                "--teacher", str(mri_ckpt),
-                "--out", str(paired_lupi_dir),
-                "--alpha-lupi", str(args.lupi_alpha),
-                "--weight-min", str(args.lupi_weight_min),
-                "--weight-max", str(args.lupi_weight_max),
-                *paired_mri_common,
-                *device_flags,
-            ],
-        ),
-        (
-            "4. Paired-only Dual MRI-Align: PhoBERT -> paired train + MRI features -> paired test 280",
-            [
-                py, "train_dual_mri_align.py",
-                "--student", args.base_model,
-                "--teacher", str(mri_ckpt),
-                "--out", str(paired_dual_dir),
-                "--lambda-align", str(args.lambda_align),
-                "--align-loss", args.align_loss,
-                "--aux-dim", str(args.aux_dim),
-                "--align-warmup-epochs", str(args.align_warmup_epochs),
-                *paired_mri_common,
-                *device_flags,
-            ] + (["--detach-aux"] if args.detach_aux else []),
-        ),
-    ]
-
-    ablation_stages = [
-        (
-            "5. Large-text CE: PhoBERT -> ~20K train -> ~20K test",
+            "2. Large-text CE: PhoBERT -> ~20K train -> ~20K test",
             [
                 py, "train_text.py",
                 "--model", args.base_model,
@@ -327,7 +296,23 @@ def main():
             ],
         ),
         (
-            "6. Large-text -> paired CE",
+            "3. Large-text direct on paired: no paired fine-tuning",
+            [
+                py, "eval_pair_text.py",
+                "--model", str(large_ckpt),
+                "--out", str(large_direct_dir),
+                "--images", args.images,
+                "--splits", "train", "val", "test",
+                "--max-len", str(args.max_len),
+                "--batch", str(args.paired_batch),
+                "--threshold", str(args.threshold),
+                "--seed", str(args.seed),
+                "--workers", str(args.workers),
+                *device_flags,
+            ],
+        ),
+        (
+            "4. Large-text -> paired CE",
             [
                 py, "train_pair_text.py",
                 "--model", str(large_ckpt),
@@ -337,7 +322,80 @@ def main():
             ],
         ),
         (
-            "7. Large-text -> paired class-weighted CE",
+            "5. MRI-guided hard-negative reweighting",
+            [
+                py, "train_hard_negative_reweight.py",
+                "--student", str(large_ckpt),
+                "--teacher", str(mri_ckpt),
+                "--out", str(hn_dir),
+                "--images", args.images,
+                "--epochs", str(args.hn_epochs),
+                "--lr", str(args.hn_lr),
+                "--batch-text", str(args.paired_batch),
+                "--batch-mri", str(args.mri_batch),
+                "--max-len", str(args.max_len),
+                "--wd", str(args.wd_text),
+                "--warmup", str(args.warmup),
+                "--threshold", str(args.threshold),
+                "--seed", str(args.seed),
+                "--workers", str(args.workers),
+                "--accum", str(args.accum),
+                "--text-fp-threshold", str(args.hn_text_threshold),
+                "--mri-negative-threshold", str(args.hn_mri_negative_threshold),
+                "--mri-ambiguous-threshold", str(args.hn_mri_ambiguous_threshold),
+                "--hard-negative-weight", str(args.hn_hard_weight),
+                "--ambiguous-negative-weight", str(args.hn_ambiguous_weight),
+                *device_flags,
+            ],
+        ),
+    ]
+
+    ablation_stages = [
+        (
+            "A1. Paired-only MRI KD",
+            [
+                py, "kd_mri_text.py",
+                "--student", args.base_model,
+                "--teacher", str(mri_ckpt),
+                "--out", str(paired_kd_dir),
+                "--alpha", str(args.kd_alpha),
+                "--kd", args.kd_loss,
+                "--temp", str(args.kd_temp),
+                *paired_mri_common,
+                *device_flags,
+            ],
+        ),
+        (
+            "A2. Paired-only MRI LUPI",
+            [
+                py, "train_lupi.py",
+                "--student", args.base_model,
+                "--teacher", str(mri_ckpt),
+                "--out", str(paired_lupi_dir),
+                "--alpha-lupi", str(args.lupi_alpha),
+                "--weight-min", str(args.lupi_weight_min),
+                "--weight-max", str(args.lupi_weight_max),
+                *paired_mri_common,
+                *device_flags,
+            ],
+        ),
+        (
+            "A3. Paired-only Dual MRI-Align",
+            [
+                py, "train_dual_mri_align.py",
+                "--student", args.base_model,
+                "--teacher", str(mri_ckpt),
+                "--out", str(paired_dual_dir),
+                "--lambda-align", str(args.lambda_align),
+                "--align-loss", args.align_loss,
+                "--aux-dim", str(args.aux_dim),
+                "--align-warmup-epochs", str(args.align_warmup_epochs),
+                *paired_mri_common,
+                *device_flags,
+            ] + (["--detach-aux"] if args.detach_aux else []),
+        ),
+        (
+            "A4. Large-text -> paired class-weighted CE",
             [
                 py, "train_pair_text.py",
                 "--model", str(large_ckpt),
@@ -348,7 +406,7 @@ def main():
             ],
         ),
         (
-            "8. Large-text -> paired MRI KD",
+            "A5. Large-text -> paired MRI KD",
             [
                 py, "kd_mri_text.py",
                 "--student", str(large_ckpt),
@@ -362,7 +420,7 @@ def main():
             ],
         ),
         (
-            "9. Large-text -> paired confidence-aware MRI KD",
+            "A6. Large-text -> paired confidence-aware MRI KD",
             [
                 py, "kd_mri_text.py",
                 "--student", str(large_ckpt),
@@ -377,7 +435,7 @@ def main():
             ],
         ),
         (
-            "10. Large-text -> paired MRI LUPI",
+            "A7. Large-text -> paired MRI LUPI",
             [
                 py, "train_lupi.py",
                 "--student", str(large_ckpt),
@@ -391,7 +449,7 @@ def main():
             ],
         ),
         (
-            "11. Large-text -> paired Dual MRI-Align",
+            "A8. Large-text -> paired Dual MRI-Align",
             [
                 py, "train_dual_mri_align.py",
                 "--student", str(large_ckpt),
@@ -409,32 +467,30 @@ def main():
 
     control_stages = [
         (
-            "12. Shuffled KD control",
+            "C1. Shuffled MRI-guided hard-negative reweighting",
             [
-                py, "kd_mri_text.py",
+                py, "train_hard_negative_reweight.py",
                 "--student", str(large_ckpt),
                 "--teacher", str(mri_ckpt),
-                "--out", str(kd_shuffle_dir),
-                "--alpha", str(args.kd_alpha),
-                "--kd", args.kd_loss,
-                "--temp", str(args.kd_temp),
+                "--out", str(hn_shuffle_dir),
+                "--images", args.images,
+                "--epochs", str(args.hn_epochs),
+                "--lr", str(args.hn_lr),
+                "--batch-text", str(args.paired_batch),
+                "--batch-mri", str(args.mri_batch),
+                "--max-len", str(args.max_len),
+                "--wd", str(args.wd_text),
+                "--warmup", str(args.warmup),
+                "--threshold", str(args.threshold),
+                "--seed", str(args.seed),
+                "--workers", str(args.workers),
+                "--accum", str(args.accum),
+                "--text-fp-threshold", str(args.hn_text_threshold),
+                "--mri-negative-threshold", str(args.hn_mri_negative_threshold),
+                "--mri-ambiguous-threshold", str(args.hn_mri_ambiguous_threshold),
+                "--hard-negative-weight", str(args.hn_hard_weight),
+                "--ambiguous-negative-weight", str(args.hn_ambiguous_weight),
                 "--shuffle-teacher",
-                *paired_mri_common,
-                *device_flags,
-            ],
-        ),
-        (
-            "13. Shuffled LUPI control",
-            [
-                py, "train_lupi.py",
-                "--student", str(large_ckpt),
-                "--teacher", str(mri_ckpt),
-                "--out", str(lupi_shuffle_dir),
-                "--alpha-lupi", str(args.lupi_alpha),
-                "--weight-min", str(args.lupi_weight_min),
-                "--weight-max", str(args.lupi_weight_max),
-                "--shuffle-teacher",
-                *paired_mri_common,
                 *device_flags,
             ],
         ),
@@ -455,8 +511,9 @@ def main():
         "include_ablation": bool(args.include_ablation or args.include_all),
         "stages": [{"name": name, "command": cmd} for name, cmd in stages],
     }
-    with open(out_root / "run_manifest.json", "w", encoding="utf-8") as f:
-        json.dump(manifest, f, ensure_ascii=False, indent=2)
+    if out_root.exists():
+        with open(out_root / "run_manifest.json", "w", encoding="utf-8") as f:
+            json.dump(manifest, f, ensure_ascii=False, indent=2)
 
     for name, cmd in stages:
         run_stage(name, cmd, args.dry_run)
@@ -486,42 +543,6 @@ def main():
         },
         {
             "group": "main",
-            "model": "Paired-only MRI-KD",
-            "init": "PhoBERT",
-            "train_data": "paired text",
-            "mri_used": "Yes",
-            "loss": "CE + KD",
-            "test": "paired test 280",
-            "dir": paired_kd_dir,
-            "split": "test",
-        },
-        {
-            "group": "main",
-            "model": "Paired-only MRI-LUPI",
-            "init": "PhoBERT",
-            "train_data": "paired text",
-            "mri_used": "Yes",
-            "loss": "weighted CE",
-            "test": "paired test 280",
-            "dir": paired_lupi_dir,
-            "split": "test",
-        },
-        {
-            "group": "main",
-            "model": "Paired-only Dual MRI-Align",
-            "init": "PhoBERT",
-            "train_data": "paired text",
-            "mri_used": "Yes",
-            "loss": "CE + align",
-            "test": "paired test 280",
-            "dir": paired_dual_dir,
-            "split": "test",
-        },
-    ]
-    if args.include_ablation or args.include_all:
-        summary_rows.extend([
-        {
-            "group": "ablation",
             "model": "Large-text CE",
             "init": "PhoBERT",
             "train_data": "~20K text",
@@ -532,7 +553,18 @@ def main():
             "split": "test",
         },
         {
-            "group": "ablation",
+            "group": "main",
+            "model": "Large-text direct",
+            "init": "Large-text ckpt",
+            "train_data": "none",
+            "mri_used": "No",
+            "loss": "eval only",
+            "test": "paired test 280",
+            "dir": large_direct_dir,
+            "split": "test",
+        },
+        {
+            "group": "main",
             "model": "Large-text -> paired CE",
             "init": "Large-text ckpt",
             "train_data": "paired text",
@@ -540,6 +572,53 @@ def main():
             "loss": "CE",
             "test": "paired test 280",
             "dir": large_to_paired_ce_dir,
+            "split": "test",
+        },
+        {
+            "group": "main",
+            "model": "MRI hard-neg reweight",
+            "init": "Large-text ckpt",
+            "train_data": "paired text",
+            "mri_used": "Yes",
+            "loss": "weighted CE",
+            "test": "paired test 280",
+            "dir": hn_dir,
+            "split": "test",
+        },
+    ]
+    if args.include_ablation or args.include_all:
+        summary_rows.extend([
+        {
+            "group": "ablation",
+            "model": "Paired-only MRI-KD",
+            "init": "PhoBERT",
+            "train_data": "paired text",
+            "mri_used": "Yes",
+            "loss": "CE + KD",
+            "test": "paired test 280",
+            "dir": paired_kd_dir,
+            "split": "test",
+        },
+        {
+            "group": "ablation",
+            "model": "Paired-only MRI-LUPI",
+            "init": "PhoBERT",
+            "train_data": "paired text",
+            "mri_used": "Yes",
+            "loss": "weighted CE",
+            "test": "paired test 280",
+            "dir": paired_lupi_dir,
+            "split": "test",
+        },
+        {
+            "group": "ablation",
+            "model": "Paired-only Dual MRI-Align",
+            "init": "PhoBERT",
+            "train_data": "paired text",
+            "mri_used": "Yes",
+            "loss": "CE + align",
+            "test": "paired test 280",
+            "dir": paired_dual_dir,
             "split": "test",
         },
         {
@@ -602,24 +681,13 @@ def main():
         summary_rows.extend([
         {
             "group": "control",
-            "model": "Shuffled KD",
-            "init": "Large-text ckpt",
-            "train_data": "paired text",
-            "mri_used": "shuffled",
-            "loss": "CE + KD",
-            "test": "paired test 280",
-            "dir": kd_shuffle_dir,
-            "split": "test",
-        },
-        {
-            "group": "control",
-            "model": "Shuffled LUPI",
+            "model": "Shuffled hard-neg reweight",
             "init": "Large-text ckpt",
             "train_data": "paired text",
             "mri_used": "shuffled",
             "loss": "weighted CE",
             "test": "paired test 280",
-            "dir": lupi_shuffle_dir,
+            "dir": hn_shuffle_dir,
             "split": "test",
         },
         ])

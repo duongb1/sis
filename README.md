@@ -1,19 +1,20 @@
 # SIS Training Scripts
 
-Training and evaluation code for MRI-only, text-only, and knowledge-distillation experiments on the SIS dataset.
+Training and evaluation code for the SIS text-rich, MRI-poor experiments.
 
 Large data folders, model checkpoints, and generated outputs are intentionally excluded from Git. The scripts assume Kaggle input paths by default, but every entrypoint has CLI arguments.
 
 ## Entrypoints
 
-- `train_mri.py`: MRI-only ResNet50 classifier. Saves `best_auc_model.pt`.
-- `train_text.py`: large text-only PhoBERT classifier on `texts/{train,val,test}/{co,khong}/*.txt`.
-- `train_pair_text.py`: paired text-only PhoBERT classifier on patient `.txt` files inside image folders.
-- `eval_img_text.py`: evaluate a text checkpoint on patient `.txt` files inside the image test folder.
-- `kd_mri_text.py`: MRI teacher to paired-text student KD.
-- `train_lupi.py`: large-text checkpoint to paired-text LUPI with MRI-guided CE sample weights.
-- `train_dual_mri_align.py`: dual-stream PhoBERT with auxiliary MRI feature alignment.
-- `run_all.py`: run the full synchronized pipeline once.
+- `train_mri.py`: MRI-only ResNet50 teacher. Saves `best_auc_model.pt`.
+- `train_text.py`: large text-only PhoBERT on `texts/{train,val,test}/{co,khong}/*.txt`.
+- `train_pair_text.py`: paired text-only PhoBERT on patient `.txt` files inside image folders.
+- `eval_pair_text.py`: evaluate any text checkpoint directly on paired text splits.
+- `train_hard_negative_reweight.py`: large-text checkpoint fine-tuning with MRI-guided hard-negative sample weights.
+- `kd_mri_text.py`: MRI teacher to paired-text student KD, kept for appendix experiments.
+- `train_lupi.py`: MRI-guided LUPI sample weighting, kept for appendix experiments.
+- `train_dual_mri_align.py`: dual-stream auxiliary MRI feature alignment, kept for appendix experiments.
+- `run_all.py`: run the synchronized pipeline and print one summary table.
 
 ## Shared Code
 
@@ -24,121 +25,16 @@ Large data folders, model checkpoints, and generated outputs are intentionally e
 - `sislib/mri_teacher.py`: MRI teacher checkpoint loading, patient-level logits, split stats, and shuffled controls.
 - `sislib/metrics.py`: metrics and prediction CSV writers.
 
-## Examples
+## Default Pipeline
 
-```bash
-python train_text.py --data /kaggle/input/datasets/duongb/cthsis/texts
-python train_pair_text.py --images /kaggle/input/datasets/duongb/cthsis/images
-python eval_img_text.py --images /kaggle/input/datasets/duongb/cthsis/images
-python train_mri.py --images /kaggle/input/datasets/duongb/cthsis/images
-python kd_mri_text.py --images /kaggle/input/datasets/duongb/cthsis/images
-python train_lupi.py --images /kaggle/input/datasets/duongb/cthsis/images
-python train_lupi.py --alpha-lupi 0.0 --images /kaggle/input/datasets/duongb/cthsis/images
-python train_dual_mri_align.py --images /kaggle/input/datasets/duongb/cthsis/images
-python run_all.py
-```
+By default, `run_all.py` runs the practical main pipeline for the hard-negative question:
 
-## Synchronized Text Pipelines
-
-Use the same `--student`, `--max-len`, `--epochs`, `--lr`, `--wd`, `--warmup`, `--threshold`, `--seed`, and `--accum` within each paired comparison group. The default paired protocol is `epochs=8`, `lr=2e-5`, `threshold=0.5`, best checkpoint by validation AUC.
-
-```bash
-# 1. Paired-only CE: PhoBERT -> paired train -> paired test 280
-python train_pair_text.py \
-  --model vinai/phobert-base \
-  --images /kaggle/input/datasets/duongb/cthsis/images \
-  --out /kaggle/working/paired_only_ce
-
-# 2. Paired-only MRI KD: PhoBERT -> paired train + MRI teacher -> paired test 280
-python kd_mri_text.py \
-  --student vinai/phobert-base \
-  --teacher /kaggle/working/mri_classifier/best_auc_model.pt \
-  --images /kaggle/input/datasets/duongb/cthsis/images \
-  --out /kaggle/working/paired_mri_kd
-
-# 3. Paired-only MRI LUPI: PhoBERT -> paired train + MRI weights -> paired test 280
-python train_lupi.py \
-  --student vinai/phobert-base \
-  --teacher /kaggle/working/mri_classifier/best_auc_model.pt \
-  --images /kaggle/input/datasets/duongb/cthsis/images \
-  --out /kaggle/working/paired_mri_lupi
-
-# 4. Paired-only Dual MRI-Align: PhoBERT -> paired train + MRI features -> paired test 280
-python train_dual_mri_align.py \
-  --student vinai/phobert-base \
-  --teacher /kaggle/working/mri_classifier/best_auc_model.pt \
-  --images /kaggle/input/datasets/duongb/cthsis/images \
-  --out /kaggle/working/paired_dual_mri_align
-
-# 5. Large-text CE: PhoBERT -> ~20K train -> ~20K test
-python train_text.py \
-  --model vinai/phobert-base \
-  --data /kaggle/input/datasets/duongb/cthsis/texts \
-  --out /kaggle/working/text_phobert_classifier
-
-# 6. Large-text -> paired CE
-python train_pair_text.py \
-  --model /kaggle/working/text_phobert_classifier/best_auc_phobert \
-  --images /kaggle/input/datasets/duongb/cthsis/images \
-  --out /kaggle/working/large_to_paired_ce
-
-# 7. Large-text -> paired class-weighted CE
-python train_pair_text.py \
-  --model /kaggle/working/text_phobert_classifier/best_auc_phobert \
-  --images /kaggle/input/datasets/duongb/cthsis/images \
-  --out /kaggle/working/large_to_paired_weighted_ce \
-  --class-weight-co 1.2
-
-# 8. Large-text -> paired MRI KD
-python kd_mri_text.py \
-  --student /kaggle/working/text_phobert_classifier/best_auc_phobert \
-  --teacher /kaggle/working/mri_classifier/best_auc_model.pt \
-  --images /kaggle/input/datasets/duongb/cthsis/images \
-  --out /kaggle/working/large_to_paired_mri_kd
-
-# 9. Large-text -> paired confidence-aware MRI KD
-python kd_mri_text.py \
-  --student /kaggle/working/text_phobert_classifier/best_auc_phobert \
-  --teacher /kaggle/working/mri_classifier/best_auc_model.pt \
-  --images /kaggle/input/datasets/duongb/cthsis/images \
-  --out /kaggle/working/large_to_paired_mri_kd_conf \
-  --kd-weight confidence
-
-# 10. Large-text -> paired MRI LUPI
-python train_lupi.py \
-  --student /kaggle/working/text_phobert_classifier/best_auc_phobert \
-  --teacher /kaggle/working/mri_classifier/best_auc_model.pt \
-  --images /kaggle/input/datasets/duongb/cthsis/images \
-  --out /kaggle/working/large_to_paired_lupi
-
-# 11. Large-text -> paired Dual MRI-Align
-python train_dual_mri_align.py \
-  --student /kaggle/working/text_phobert_classifier/best_auc_phobert \
-  --teacher /kaggle/working/mri_classifier/best_auc_model.pt \
-  --images /kaggle/input/datasets/duongb/cthsis/images \
-  --out /kaggle/working/large_to_paired_dual_mri_align
-
-# 12-13. Shuffled large-text controls
-python kd_mri_text.py \
-  --student /kaggle/working/text_phobert_classifier/best_auc_phobert \
-  --teacher /kaggle/working/mri_classifier/best_auc_model.pt \
-  --images /kaggle/input/datasets/duongb/cthsis/images \
-  --out /kaggle/working/large_to_paired_mri_kd_shuffled \
-  --shuffle-teacher
-
-python train_lupi.py \
-  --student /kaggle/working/text_phobert_classifier/best_auc_phobert \
-  --teacher /kaggle/working/mri_classifier/best_auc_model.pt \
-  --images /kaggle/input/datasets/duongb/cthsis/images \
-  --out /kaggle/working/large_to_paired_lupi_shuffled \
-  --shuffle-teacher
-```
-
-`train_lupi.py` uses disagreement-aware LUPI by default: it increases CE weight when MRI teacher is more confident on the true label than the current text student.
-
-`train_dual_mri_align.py` uses MRI penultimate ResNet50 features only during training. Validation/test metrics come only from the main text classification node.
-
-By default, `run_all.py` runs only the main results table to save time:
+1. `MRI-only teacher`: train MRI teacher on paired MRI train and test on paired test 280.
+2. `Paired-only CE`: PhoBERT baseline on paired text train and paired test 280.
+3. `Large-text CE`: train PhoBERT on the large text cohort.
+4. `Large-text direct`: evaluate the large-text checkpoint directly on paired train/val/test, without paired fine-tuning.
+5. `Large-text -> paired CE`: ordinary paired fine-tuning from the large-text checkpoint.
+6. `MRI hard-neg reweight`: fine-tune from the large-text checkpoint with MRI-guided hard-negative weights.
 
 ```bash
 python run_all.py \
@@ -147,21 +43,77 @@ python run_all.py \
   --out-root /kaggle/working/sis_runs
 ```
 
-Optional flags:
+Optional controls and appendix runs:
 
 ```bash
-python run_all.py --include-control   # add shuffled KD/LUPI controls
-python run_all.py --include-ablation  # add large-text/weighted/confidence variants
-python run_all.py --include-all       # run main + control + ablation
+python run_all.py --include-control   # add shuffled hard-negative reweighting
+python run_all.py --include-ablation  # add KD/LUPI/Dual/weighted appendix runs
+python run_all.py --include-all       # run main + control + appendix
 ```
 
-At the end, `run_all.py` prints three tables:
-
-- `MAIN RESULTS`: MRI-only teacher, Paired-only CE, Paired-only MRI-KD, Paired-only MRI-LUPI, Paired-only Dual MRI-Align.
-- `CONTROL EXPERIMENTS`: shuffled KD/LUPI.
-- `ABLATION / APPENDIX`: large-text and sensitivity/confidence variants.
-
-Each table includes `Acc`, `F1`, `AUC`, sensitivity, specificity, and confusion matrix `[[TN, FP], [FN, TP]]`. The script also writes:
+At the end, `run_all.py` prints tables with `Acc`, `F1`, `AUC`, sensitivity, specificity, and confusion matrix `[[TN, FP], [FN, TP]]`. It also writes:
 
 - `/kaggle/working/sis_runs/summary_results.csv`
 - `/kaggle/working/sis_runs/summary_results.json`
+
+## Hard-Negative Reweighting
+
+The proposed method targets large-text false positives on paired hard negatives. It computes:
+
+```text
+p_text = P_text(co | text) from the large-text checkpoint
+p_mri  = P_mri(co | MRI) from the MRI-only teacher
+```
+
+Default weighting on paired train:
+
+```text
+if y = 0 and p_text >= 0.7 and p_mri <= 0.3:
+    weight = 3.0
+elif y = 0 and p_text >= 0.7 and p_mri > 0.5:
+    weight = 0.5
+else:
+    weight = 1.0
+```
+
+Direct run:
+
+```bash
+python train_hard_negative_reweight.py \
+  --student /kaggle/working/sis_runs/02_large_text_ce/best_auc_phobert \
+  --teacher /kaggle/working/sis_runs/00_mri_teacher/best_auc_model.pt \
+  --images /kaggle/input/datasets/duongb/cthsis/images \
+  --out /kaggle/working/sis_runs/05_mri_hard_negative_reweight \
+  --epochs 5 \
+  --lr 1e-5
+```
+
+Shuffled control:
+
+```bash
+python train_hard_negative_reweight.py \
+  --student /kaggle/working/sis_runs/02_large_text_ce/best_auc_phobert \
+  --teacher /kaggle/working/sis_runs/00_mri_teacher/best_auc_model.pt \
+  --images /kaggle/input/datasets/duongb/cthsis/images \
+  --out /kaggle/working/sis_runs/06_mri_hard_negative_reweight_shuffled \
+  --shuffle-teacher
+```
+
+The script saves `sample_weights.csv` with `p_text_co`, `p_mri_co`, assigned weight, and rule per train patient.
+
+## Individual Runs
+
+```bash
+python train_mri.py --images /kaggle/input/datasets/duongb/cthsis/images
+python train_text.py --data /kaggle/input/datasets/duongb/cthsis/texts
+python train_pair_text.py --images /kaggle/input/datasets/duongb/cthsis/images
+python eval_pair_text.py --model /kaggle/working/sis_runs/02_large_text_ce/best_auc_phobert --images /kaggle/input/datasets/duongb/cthsis/images --splits train val test
+```
+
+Appendix experiments:
+
+```bash
+python kd_mri_text.py --images /kaggle/input/datasets/duongb/cthsis/images
+python train_lupi.py --images /kaggle/input/datasets/duongb/cthsis/images
+python train_dual_mri_align.py --images /kaggle/input/datasets/duongb/cthsis/images
+```
