@@ -73,7 +73,10 @@ def train_epoch(model, loader, optimizer, scheduler, scaler, device, args, epoch
                 align_loss=args.align_loss,
                 detach_aux=args.detach_aux,
             )
-            loss = outputs["loss"] / args.accum
+            loss_raw = outputs["loss"].mean()
+            loss_ce = outputs["loss_ce"].mean()
+            loss_align = outputs["loss_align"].mean()
+            loss = loss_raw / args.accum
         scaler.scale(loss).backward()
         if step % args.accum == 0 or step == len(loader):
             scaler.unscale_(optimizer)
@@ -84,8 +87,8 @@ def train_epoch(model, loader, optimizer, scheduler, scaler, device, args, epoch
             optimizer.zero_grad(set_to_none=True)
         bs = labels.size(0)
         total_loss += loss.item() * args.accum * bs
-        total_ce += outputs["loss_ce"].detach().item() * bs
-        total_align += outputs["loss_align"].detach().item() * bs
+        total_ce += loss_ce.detach().item() * bs
+        total_align += loss_align.detach().item() * bs
         total_count += bs
     denom = max(total_count, 1)
     return float(total_loss / denom), float(total_ce / denom), float(total_align / denom), lam
@@ -104,7 +107,7 @@ def eval_dual(model, loader, device, threshold):
         outputs = model(**inputs, labels=labels, teacher_mri_vec=None)
         probs = torch.softmax(outputs["logits"], dim=-1)[:, 1]
         bs = labels.size(0)
-        total_loss += outputs["loss"].item() * bs
+        total_loss += outputs["loss"].mean().item() * bs
         total_count += bs
         ids.extend(batch_ids)
         labels_all.extend(labels.detach().cpu().numpy().tolist())
