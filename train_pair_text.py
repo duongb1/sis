@@ -26,7 +26,6 @@ def parse_args():
     p.add_argument("--lr", type=float, default=2e-5)
     p.add_argument("--wd", type=float, default=0.01)
     p.add_argument("--warmup", type=float, default=0.1)
-    p.add_argument("--class-weight-co", type=float, default=1.0)
     p.add_argument("--threshold", type=float, default=0.5)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--workers", type=int, default=0)
@@ -49,8 +48,6 @@ def save_model(model, tokenizer, path, epoch, metrics, args, max_len):
                 "text_model_name": args.model,
                 "max_length": max_len,
                 "data_source": "paired_text_from_image_folders",
-                "class_weight_khong": 1.0,
-                "class_weight_co": args.class_weight_co,
             },
             f,
             ensure_ascii=False,
@@ -95,13 +92,9 @@ def main():
     steps = max(1, int(np.ceil(len(train_loader) / max(args.accum, 1))) * args.epochs)
     sched = get_linear_schedule_with_warmup(opt, int(steps * args.warmup), steps)
     scaler = torch.amp.GradScaler("cuda", enabled=device.type == "cuda")
-    class_weights = None
-    if args.class_weight_co != 1.0:
-        class_weights = torch.tensor([1.0, args.class_weight_co], dtype=torch.float32, device=device)
-
     best, best_dir, history = -1.0, out / "best_auc_phobert", []
     for epoch in range(1, args.epochs + 1):
-        train_loss = ce_epoch(model, train_loader, opt, sched, scaler, device, args.accum, class_weights)
+        train_loss = ce_epoch(model, train_loader, opt, sched, scaler, device, args.accum)
         val_metrics, val_ids, val_y, val_p, val_pred = eval_text(model, val_loader, device, args.threshold)
         history.append(
             {

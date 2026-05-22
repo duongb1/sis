@@ -17,7 +17,7 @@ Large data folders, model checkpoints, and generated outputs are intentionally e
 
 - `sislib/common.py`: labels, device helpers, seeding, rounding, model wrapping.
 - `sislib/text_data.py`: text record collectors and datasets.
-- `sislib/text_train.py`: text CE/KD train loops and evaluation.
+- `sislib/text_train.py`: text CE train loop and evaluation.
 - `sislib/mri.py`: MRI pair collectors, transforms, datasets, and ResNet factory.
 - `sislib/mri_teacher.py`: MRI teacher checkpoint loading, patient-level logits, and split stats.
 - `sislib/metrics.py`: metrics and prediction CSV writers.
