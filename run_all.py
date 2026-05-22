@@ -52,10 +52,18 @@ def add_flag(cmd, enabled, flag):
         cmd.append(flag)
 
 
-def run_stage(name, cmd, dry_run):
+def stage_done(done_paths):
+    return all(Path(path).exists() for path in done_paths)
+
+
+def run_stage(name, cmd, dry_run, done_paths):
     print("\n" + "=" * 80)
     print(name)
     print(" ".join(cmd))
+    if stage_done(done_paths):
+        print(f"SKIP: found existing checkpoint/artifact: {', '.join(str(p) for p in done_paths)}")
+        print("=" * 80, flush=True)
+        return
     print("=" * 80, flush=True)
     if dry_run:
         return
@@ -236,6 +244,7 @@ def main():
                 "--workers", str(args.workers),
                 *device_flags,
             ],
+            [mri_ckpt],
         ),
         (
             "1. Large-text CE: PhoBERT -> ~20K train -> ~20K test",
@@ -250,6 +259,7 @@ def main():
                 *text_common,
                 *device_flags,
             ],
+            [large_ckpt],
         ),
         (
             "2. Large-text -> paired CE",
@@ -260,6 +270,7 @@ def main():
                 *paired_common,
                 *device_flags,
             ],
+            [large_to_paired_ce_dir / "best_auc_phobert"],
         ),
     ]
 
@@ -291,6 +302,7 @@ def main():
                 "--positive-weight", str(positive_weight),
                 *device_flags,
             ],
+            [out_dir / "best_auc_phobert"],
         )
 
     main_stages.extend(
@@ -311,14 +323,14 @@ def main():
         "out_root": str(out_root),
         "large_text_checkpoint": str(large_ckpt),
         "mri_teacher_checkpoint": str(mri_ckpt),
-        "stages": [{"name": name, "command": cmd} for name, cmd in stages],
+        "stages": [{"name": name, "command": cmd, "done_paths": [str(path) for path in done_paths]} for name, cmd, done_paths in stages],
     }
     if out_root.exists():
         with open(out_root / "run_manifest.json", "w", encoding="utf-8") as f:
             json.dump(manifest, f, ensure_ascii=False, indent=2)
 
-    for name, cmd in stages:
-        run_stage(name, cmd, args.dry_run)
+    for name, cmd, done_paths in stages:
+        run_stage(name, cmd, args.dry_run, done_paths)
 
     summary_rows = [
         {

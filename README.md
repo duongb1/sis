@@ -46,6 +46,8 @@ At the end, `run_all.py` prints one table with `Acc`, `F1`, `AUC`, sensitivity, 
 - `/kaggle/working/sis_runs/summary_results.csv`
 - `/kaggle/working/sis_runs/summary_results.json`
 
+If a stage checkpoint already exists under `--out-root`, `run_all.py` skips that stage and reuses the existing output. Delete that stage folder if you want to train it again.
+
 ## Hard-Negative Reweighting
 
 The proposed method targets large-text false positives on paired hard negatives. It computes:
