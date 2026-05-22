@@ -21,8 +21,8 @@ from sislib.text_train import eval_text
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Fine-tune large-text PhoBERT with MRI-guided hard-negative sample weights.")
-    p.add_argument("--student", required=True, help="Large-text checkpoint used as student initialization.")
+    p = argparse.ArgumentParser(description="Fine-tune a text checkpoint with MRI-guided hard-negative sample weights.")
+    p.add_argument("--student", required=True, help="Text checkpoint used as student initialization and p_text source.")
     p.add_argument("--teacher", required=True, help="MRI-only teacher checkpoint.")
     p.add_argument("--images", default="/kaggle/input/datasets/duongb/cthsis/images")
     p.add_argument("--out", default="/kaggle/working/hard_negative_reweight")
@@ -83,7 +83,7 @@ def compute_text_probs(records, model, tokenizer, max_len, device, batch_size, w
     )
     model.eval()
     out = {}
-    for batch in tqdm(loader, desc="Computing large-text probabilities", leave=False):
+    for batch in tqdm(loader, desc="Computing text probabilities", leave=False):
         inputs, ids = batch_to_device(batch, device, "id")
         inputs.pop("labels")
         logits = model(**inputs).logits

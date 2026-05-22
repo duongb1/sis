@@ -9,17 +9,12 @@ from pathlib import Path
 def parse_args():
     p = argparse.ArgumentParser(description="Run the full synchronized SIS experiment pipeline once.")
     p.add_argument("--images", default="/kaggle/input/datasets/duongb/cthsis/images")
-    p.add_argument("--texts", default="/kaggle/input/datasets/duongb/cthsis/texts")
     p.add_argument("--out-root", default="/kaggle/working/sis_runs")
     p.add_argument("--base-model", default="vinai/phobert-base")
 
     p.add_argument("--mri-epochs", type=int, default=20)
     p.add_argument("--mri-lr", type=float, default=1e-4)
     p.add_argument("--mri-batch", type=int, default=64)
-
-    p.add_argument("--large-epochs", type=int, default=8)
-    p.add_argument("--large-lr", type=float, default=2e-5)
-    p.add_argument("--large-batch", type=int, default=16)
 
     p.add_argument("--paired-epochs", type=int, default=8)
     p.add_argument("--paired-lr", type=float, default=2e-5)
@@ -217,14 +212,13 @@ def main():
     add_flag(device_flags, args.no_mgpu, "--no-mgpu")
 
     mri_dir = out_root / "00_mri_teacher"
-    large_text_dir = out_root / "02_large_text_ce"
-    large_to_paired_ce_dir = out_root / "04_large_to_paired_ce"
-    hn_125_pos110_dir = out_root / "05_hn_w125_pos110"
-    hn_125_pos120_dir = out_root / "06_hn_w125_pos120"
-    hn_140_pos120_dir = out_root / "07_hn_w140_pos120"
-    hn_150_pos130_dir = out_root / "08_hn_w150_pos130"
+    paired_ce_dir = out_root / "01_paired_only_ce"
+    hn_110_dir = out_root / "02_pair_hn_w110"
+    hn_120_dir = out_root / "03_pair_hn_w120"
+    hn_130_dir = out_root / "04_pair_hn_w130"
+    hn_120_pos110_dir = out_root / "05_pair_hn_w120_pos110"
 
-    large_ckpt = large_text_dir / "best_auc_phobert"
+    paired_ckpt = paired_ce_dir / "best_auc_phobert"
     mri_ckpt = mri_dir / "best_auc_model.pt"
 
     main_stages = [
@@ -246,30 +240,15 @@ def main():
             [mri_ckpt],
         ),
         (
-            "1. Large-text CE: PhoBERT -> ~20K train -> ~20K test",
-            [
-                py, "train_text.py",
-                "--model", args.base_model,
-                "--data", args.texts,
-                "--out", str(large_text_dir),
-                "--epochs", str(args.large_epochs),
-                "--lr", str(args.large_lr),
-                "--batch", str(args.large_batch),
-                *text_common,
-                *device_flags,
-            ],
-            [large_ckpt],
-        ),
-        (
-            "2. Large-text -> paired CE",
+            "1. Paired-only CE",
             [
                 py, "train_pair_text.py",
-                "--model", str(large_ckpt),
-                "--out", str(large_to_paired_ce_dir),
+                "--model", args.base_model,
+                "--out", str(paired_ce_dir),
                 *paired_common,
                 *device_flags,
             ],
-            [large_to_paired_ce_dir / "best_auc_phobert"],
+            [paired_ckpt],
         ),
     ]
 
@@ -278,7 +257,7 @@ def main():
             f"{index}. {name}",
             [
                 py, "train_hard_negative_reweight.py",
-                "--student", str(large_ckpt),
+                "--student", str(paired_ckpt),
                 "--teacher", str(mri_ckpt),
                 "--out", str(out_dir),
                 "--images", args.images,
@@ -306,10 +285,10 @@ def main():
 
     main_stages.extend(
         [
-            hard_negative_stage(3, "MRI hard-neg weight 1.25 + positive weight 1.1", hn_125_pos110_dir, 1.25, 1.1),
-            hard_negative_stage(4, "MRI hard-neg weight 1.25 + positive weight 1.2", hn_125_pos120_dir, 1.25, 1.2),
-            hard_negative_stage(5, "MRI hard-neg weight 1.4 + positive weight 1.2", hn_140_pos120_dir, 1.4, 1.2),
-            hard_negative_stage(6, "MRI hard-neg weight 1.5 + positive weight 1.3", hn_150_pos130_dir, 1.5, 1.3),
+            hard_negative_stage(2, "Paired-only CE + MRI HN w=1.1", hn_110_dir, 1.1),
+            hard_negative_stage(3, "Paired-only CE + MRI HN w=1.2", hn_120_dir, 1.2),
+            hard_negative_stage(4, "Paired-only CE + MRI HN w=1.3", hn_130_dir, 1.3),
+            hard_negative_stage(5, "Paired-only CE + MRI HN w=1.2 + positive weight 1.1", hn_120_pos110_dir, 1.2, 1.1),
         ]
     )
 
@@ -317,9 +296,8 @@ def main():
 
     manifest = {
         "images": args.images,
-        "texts": args.texts,
         "out_root": str(out_root),
-        "large_text_checkpoint": str(large_ckpt),
+        "paired_text_checkpoint": str(paired_ckpt),
         "mri_teacher_checkpoint": str(mri_ckpt),
         "stages": [{"name": name, "command": cmd, "done_paths": [str(path) for path in done_paths]} for name, cmd, done_paths in stages],
     }
@@ -332,53 +310,53 @@ def main():
 
     summary_rows = [
         {
-            "model": "Large-text -> paired CE",
-            "init": "Large-text ckpt",
+            "model": "Paired-only CE",
+            "init": "PhoBERT",
             "train_data": "paired text",
             "mri_used": "No",
             "loss": "CE",
             "test": "paired test 280",
-            "dir": large_to_paired_ce_dir,
+            "dir": paired_ce_dir,
             "split": "test",
         },
         {
-            "model": "MRI HN w=1.25 + pos=1.1",
-            "init": "Large-text ckpt",
+            "model": "Paired-only CE + MRI HN w=1.1",
+            "init": "Paired CE ckpt",
             "train_data": "paired text",
             "mri_used": "Yes",
             "loss": "weighted CE",
             "test": "paired test 280",
-            "dir": hn_125_pos110_dir,
+            "dir": hn_110_dir,
             "split": "test",
         },
         {
-            "model": "MRI HN w=1.25 + pos=1.2",
-            "init": "Large-text ckpt",
+            "model": "Paired-only CE + MRI HN w=1.2",
+            "init": "Paired CE ckpt",
             "train_data": "paired text",
             "mri_used": "Yes",
             "loss": "weighted CE",
             "test": "paired test 280",
-            "dir": hn_125_pos120_dir,
+            "dir": hn_120_dir,
             "split": "test",
         },
         {
-            "model": "MRI HN w=1.4 + pos=1.2",
-            "init": "Large-text ckpt",
+            "model": "Paired-only CE + MRI HN w=1.3",
+            "init": "Paired CE ckpt",
             "train_data": "paired text",
             "mri_used": "Yes",
             "loss": "weighted CE",
             "test": "paired test 280",
-            "dir": hn_140_pos120_dir,
+            "dir": hn_130_dir,
             "split": "test",
         },
         {
-            "model": "MRI HN w=1.5 + pos=1.3",
-            "init": "Large-text ckpt",
+            "model": "Paired CE + MRI HN w=1.2 + pos=1.1",
+            "init": "Paired CE ckpt",
             "train_data": "paired text",
             "mri_used": "Yes",
             "loss": "weighted CE",
             "test": "paired test 280",
-            "dir": hn_150_pos130_dir,
+            "dir": hn_120_pos110_dir,
             "split": "test",
         },
     ]

@@ -7,9 +7,8 @@ Large data folders, model checkpoints, and generated outputs are intentionally e
 ## Entrypoints
 
 - `train_mri.py`: MRI-only ResNet50 teacher. Saves `best_auc_model.pt`.
-- `train_text.py`: large text-only PhoBERT on `texts/{train,val,test}/{co,khong}/*.txt`.
 - `train_pair_text.py`: paired text-only PhoBERT on patient `.txt` files inside image folders.
-- `train_hard_negative_reweight.py`: large-text checkpoint fine-tuning with MRI-guided hard-negative sample weights.
+- `train_hard_negative_reweight.py`: text checkpoint fine-tuning with MRI-guided hard-negative sample weights.
 - `run_all.py`: run the synchronized pipeline and print one summary table.
 
 ## Shared Code
@@ -23,20 +22,19 @@ Large data folders, model checkpoints, and generated outputs are intentionally e
 
 ## Default Pipeline
 
-By default, `run_all.py` runs the large-text adaptation and MRI hard-negative weight sweep:
+By default, `run_all.py` runs the paired-only CE and MRI hard-negative weight sweep:
 
-1. `Large-text -> paired CE`
-2. `MRI hard-neg weight 1.25 + positive weight 1.1`
-3. `MRI hard-neg weight 1.25 + positive weight 1.2`
-4. `MRI hard-neg weight 1.4 + positive weight 1.2`
-5. `MRI hard-neg weight 1.5 + positive weight 1.3`
+1. `Paired-only CE`
+2. `Paired-only CE + MRI HN w=1.1`
+3. `Paired-only CE + MRI HN w=1.2`
+4. `Paired-only CE + MRI HN w=1.3`
+5. `Paired-only CE + MRI HN w=1.2 + positive weight 1.1`
 
-`run_all.py` still trains the MRI teacher and large-text checkpoint first because those checkpoints are required dependencies.
+`run_all.py` still trains the MRI teacher first because that checkpoint is required to identify MRI-guided hard negatives.
 
 ```bash
 python run_all.py \
   --images /kaggle/input/datasets/duongb/cthsis/images \
-  --texts /kaggle/input/datasets/duongb/cthsis/texts \
   --out-root /kaggle/working/sis_runs
 ```
 
@@ -49,10 +47,10 @@ If a stage checkpoint already exists under `--out-root`, `run_all.py` skips that
 
 ## Hard-Negative Reweighting
 
-The proposed method targets large-text false positives on paired hard negatives. It computes:
+The proposed method targets text false positives on paired hard negatives. It computes:
 
 ```text
-p_text = P_text(co | text) from the large-text checkpoint
+p_text = P_text(co | text) from the paired-only CE checkpoint
 p_mri  = P_mri(co | MRI) from the MRI-only teacher
 ```
 
@@ -71,10 +69,10 @@ Direct run:
 
 ```bash
 python train_hard_negative_reweight.py \
-  --student /kaggle/working/sis_runs/02_large_text_ce/best_auc_phobert \
+  --student /kaggle/working/sis_runs/01_paired_only_ce/best_auc_phobert \
   --teacher /kaggle/working/sis_runs/00_mri_teacher/best_auc_model.pt \
   --images /kaggle/input/datasets/duongb/cthsis/images \
-  --out /kaggle/working/sis_runs/05_mri_hard_negative_reweight \
+  --out /kaggle/working/sis_runs/02_pair_hn_w110 \
   --epochs 5 \
   --lr 1e-5
 ```
@@ -85,6 +83,5 @@ The script saves `sample_weights.csv` with `p_text_co`, `p_mri_co`, assigned wei
 
 ```bash
 python train_mri.py --images /kaggle/input/datasets/duongb/cthsis/images
-python train_text.py --data /kaggle/input/datasets/duongb/cthsis/texts
 python train_pair_text.py --images /kaggle/input/datasets/duongb/cthsis/images
 ```
