@@ -56,6 +56,14 @@ val_teacher_outputs_best_auc.csv
 test_teacher_outputs_best_auc.csv
 ```
 
+If any of these CSVs are missing, the script regenerates `p_mri` from:
+
+```text
+<mri_teacher_dir>/best_auc_model.pt
+```
+
+using `--images`, then saves `mri_teacher_predictions_merged.csv` in the stacking output directory. You can also pass an explicit checkpoint with `--mri_teacher_ckpt`.
+
 Labels may be `0/1`, `khong/co`, or `không/có`.
 
 ## Protocol

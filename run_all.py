@@ -13,11 +13,13 @@ def parse_args():
     p.add_argument("--paired_text_model_name_or_ckpt", default="vinai/phobert-base")
     p.add_argument("--mri_teacher_pred_csv", default=None)
     p.add_argument("--mri_teacher_dir", default=None)
+    p.add_argument("--mri_teacher_ckpt", default=None)
     p.add_argument("--output_dir", required=True)
     p.add_argument("--n_folds", type=int, default=5)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--epochs", type=int, default=4)
     p.add_argument("--batch", type=int, default=16)
+    p.add_argument("--batch_mri", type=int, default=64)
     p.add_argument("--lr", type=float, default=2e-5)
     p.add_argument("--wd", type=float, default=0.01)
     p.add_argument("--warmup", type=float, default=0.1)
@@ -42,6 +44,7 @@ def main():
         "--seed", str(args.seed),
         "--epochs", str(args.epochs),
         "--batch", str(args.batch),
+        "--batch_mri", str(args.batch_mri),
         "--lr", str(args.lr),
         "--wd", str(args.wd),
         "--warmup", str(args.warmup),
@@ -62,6 +65,8 @@ def main():
         cmd.extend(["--mri_teacher_pred_csv", args.mri_teacher_pred_csv])
     if args.mri_teacher_dir:
         cmd.extend(["--mri_teacher_dir", args.mri_teacher_dir])
+    if args.mri_teacher_ckpt:
+        cmd.extend(["--mri_teacher_ckpt", args.mri_teacher_ckpt])
     if args.cpu:
         cmd.append("--cpu")
     if args.no_mgpu:

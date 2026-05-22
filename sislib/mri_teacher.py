@@ -18,7 +18,7 @@ def clean_state_dict(state):
 def load_mri_teacher(path, device, multi_gpu):
     ckpt = torch.load(path, map_location=device, weights_only=False)
     state = ckpt["model_state"] if isinstance(ckpt, dict) and "model_state" in ckpt else ckpt
-    model = resnet50_binary()
+    model = resnet50_binary(pretrained=False)
     model.load_state_dict(clean_state_dict(state))
     return to_device(model.eval(), device, multi_gpu)
 

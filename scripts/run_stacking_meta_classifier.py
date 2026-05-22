@@ -21,6 +21,8 @@ if str(ROOT) not in sys.path:
 
 from sislib.common import get_device, resolve_max_len, round_float, round_metrics, seed_all, to_device, unwrap
 from sislib.metrics import cls_metrics
+from sislib.mri import collect_pairs
+from sislib.mri_teacher import compute_mri_logits, load_mri_teacher
 from sislib.text_data import collect_paired_text
 from sislib.text_train import ce_epoch, eval_text
 
@@ -38,11 +40,13 @@ def parse_args():
     p.add_argument("--paired_text_model_name_or_ckpt", required=True)
     p.add_argument("--mri_teacher_pred_csv", default=None)
     p.add_argument("--mri_teacher_dir", default=None, help="Optional train_mri.py output dir containing *_teacher_outputs_best_auc.csv.")
+    p.add_argument("--mri_teacher_ckpt", default=None, help="Optional MRI teacher checkpoint. Defaults to mri_teacher_dir/best_auc_model.pt.")
     p.add_argument("--output_dir", required=True)
     p.add_argument("--n_folds", type=int, default=5)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--epochs", type=int, default=4)
     p.add_argument("--batch", type=int, default=16)
+    p.add_argument("--batch_mri", type=int, default=64)
     p.add_argument("--lr", type=float, default=2e-5)
     p.add_argument("--wd", type=float, default=0.01)
     p.add_argument("--warmup", type=float, default=0.1)
@@ -129,22 +133,7 @@ def load_splits(args):
     return load_split(args.paired_train_csv), load_split(args.paired_val_csv), load_split(args.paired_test_csv)
 
 
-def load_mri_predictions(args):
-    if args.mri_teacher_pred_csv:
-        mri = pd.read_csv(args.mri_teacher_pred_csv)
-    elif args.mri_teacher_dir:
-        root = Path(args.mri_teacher_dir)
-        parts = []
-        for split in ["train", "val", "test"]:
-            path = root / f"{split}_teacher_outputs_best_auc.csv"
-            if not path.exists():
-                raise FileNotFoundError(f"Missing MRI teacher output: {path}")
-            parts.append(pd.read_csv(path))
-        mri = pd.concat(parts, axis=0, ignore_index=True)
-        mri.to_csv(Path(args.output_dir) / "mri_teacher_predictions_merged.csv", index=False)
-    else:
-        raise ValueError("Provide --mri_teacher_pred_csv or --mri_teacher_dir.")
-
+def normalize_mri_predictions(mri):
     if "sample_id" not in mri.columns and "id" in mri.columns:
         mri = mri.rename(columns={"id": "sample_id"})
     if "p_mri" not in mri.columns and "prob_co" in mri.columns:
@@ -159,9 +148,82 @@ def load_mri_predictions(args):
     return mri
 
 
-def load_data(args):
+def frames_to_records(train, val, test):
+    records = []
+    for df in [train, val, test]:
+        for row in df.itertuples(index=False):
+            records.append({"id": str(row.sample_id), "label": int(row.label)})
+    return records
+
+
+def teacher_logits_to_mri_frame(teacher_logits):
+    rows = []
+    for sample_id, logits in teacher_logits.items():
+        values = np.asarray(logits, dtype=np.float64)
+        exp_values = np.exp(values - values.max())
+        prob_co = float(exp_values[1] / exp_values.sum())
+        rows.append({"sample_id": str(sample_id), "p_mri": prob_co})
+    return pd.DataFrame(rows)
+
+
+def regenerate_mri_predictions(args, train, val, test, device):
+    if not args.images:
+        raise FileNotFoundError(
+            "MRI teacher output CSVs are missing. Pass --images so p_mri can be regenerated from the MRI checkpoint."
+        )
+    ckpt = Path(args.mri_teacher_ckpt) if args.mri_teacher_ckpt else None
+    if ckpt is None and args.mri_teacher_dir:
+        ckpt = Path(args.mri_teacher_dir) / "best_auc_model.pt"
+    if ckpt is None or not ckpt.exists():
+        raise FileNotFoundError(
+            f"MRI teacher output CSVs are missing and MRI checkpoint was not found: {ckpt}. "
+            "Rerun train_mri.py or pass --mri_teacher_pred_csv."
+        )
+
+    records = frames_to_records(train, val, test)
+    mri_records, image_root = collect_pairs(args.images)
+    print(f"Regenerating MRI teacher predictions from {ckpt}")
+    print(f"MRI image root: {image_root.resolve()}")
+    teacher = load_mri_teacher(ckpt, device, not args.no_mgpu)
+    teacher_logits = compute_mri_logits(records, mri_records, teacher, device, args.batch_mri, args.workers)
+    mri = teacher_logits_to_mri_frame(teacher_logits)
+    out_path = Path(args.output_dir) / "mri_teacher_predictions_merged.csv"
+    mri.to_csv(out_path, index=False)
+    print(f"Saved regenerated MRI teacher predictions: {out_path}")
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+    return normalize_mri_predictions(mri)
+
+
+def load_mri_predictions(args, train, val, test, device):
+    if args.mri_teacher_pred_csv:
+        mri = pd.read_csv(args.mri_teacher_pred_csv)
+    elif args.mri_teacher_dir:
+        root = Path(args.mri_teacher_dir)
+        parts = []
+        missing_paths = []
+        for split in ["train", "val", "test"]:
+            path = root / f"{split}_teacher_outputs_best_auc.csv"
+            if not path.exists():
+                missing_paths.append(path)
+                continue
+            parts.append(pd.read_csv(path))
+        if missing_paths:
+            print("Missing MRI teacher output CSVs:")
+            for path in missing_paths:
+                print(f"- {path}")
+            return regenerate_mri_predictions(args, train, val, test, device)
+        mri = pd.concat(parts, axis=0, ignore_index=True)
+        mri.to_csv(Path(args.output_dir) / "mri_teacher_predictions_merged.csv", index=False)
+    else:
+        raise ValueError("Provide --mri_teacher_pred_csv or --mri_teacher_dir.")
+
+    return normalize_mri_predictions(mri)
+
+
+def load_data(args, device):
     train, val, test = load_splits(args)
-    mri = load_mri_predictions(args)
+    mri = load_mri_predictions(args, train, val, test, device)
     return train, val, test, mri
 
 
@@ -401,7 +463,7 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     device = get_device(args.cpu)
 
-    train, val, test, mri = load_data(args)
+    train, val, test, mri = load_data(args, device)
     validate_splits(train, val, test, mri)
     train = merge_mri(train, mri)
     val = merge_mri(val, mri)

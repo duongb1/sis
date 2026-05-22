@@ -97,7 +97,8 @@ def mri_transforms(size):
     return train_tf, eval_tf
 
 
-def resnet50_binary():
-    model = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V2)
+def resnet50_binary(pretrained=True):
+    weights = models.ResNet50_Weights.IMAGENET1K_V2 if pretrained else None
+    model = models.resnet50(weights=weights)
     model.fc = nn.Linear(model.fc.in_features, 1)
     return model
