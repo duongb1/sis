@@ -26,11 +26,10 @@ Large data folders, model checkpoints, and generated outputs are intentionally e
 By default, `run_all.py` runs the large-text adaptation and MRI hard-negative weight sweep:
 
 1. `Large-text -> paired CE`
-2. `MRI hard-neg weight 1.25`
-3. `MRI hard-neg weight 1.5`
-4. `MRI hard-neg weight 2.0`
-5. `MRI hard-neg weight 1.5 + positive weight 1.2`
-6. `MRI hard-neg weight 2.0 + positive weight 1.2`
+2. `MRI hard-neg weight 1.25 + positive weight 1.1`
+3. `MRI hard-neg weight 1.25 + positive weight 1.2`
+4. `MRI hard-neg weight 1.4 + positive weight 1.2`
+5. `MRI hard-neg weight 1.5 + positive weight 1.3`
 
 `run_all.py` still trains the MRI teacher and large-text checkpoint first because those checkpoints are required dependencies.
 

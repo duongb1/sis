@@ -219,11 +219,10 @@ def main():
     mri_dir = out_root / "00_mri_teacher"
     large_text_dir = out_root / "02_large_text_ce"
     large_to_paired_ce_dir = out_root / "04_large_to_paired_ce"
-    hn_125_dir = out_root / "05_hn_w125"
-    hn_150_dir = out_root / "06_hn_w150"
-    hn_200_dir = out_root / "07_hn_w200"
-    hn_150_pos_dir = out_root / "08_hn_w150_pos120"
-    hn_200_pos_dir = out_root / "09_hn_w200_pos120"
+    hn_125_pos110_dir = out_root / "05_hn_w125_pos110"
+    hn_125_pos120_dir = out_root / "06_hn_w125_pos120"
+    hn_140_pos120_dir = out_root / "07_hn_w140_pos120"
+    hn_150_pos130_dir = out_root / "08_hn_w150_pos130"
 
     large_ckpt = large_text_dir / "best_auc_phobert"
     mri_ckpt = mri_dir / "best_auc_model.pt"
@@ -307,11 +306,10 @@ def main():
 
     main_stages.extend(
         [
-            hard_negative_stage(3, "MRI hard-neg weight 1.25", hn_125_dir, 1.25),
-            hard_negative_stage(4, "MRI hard-neg weight 1.5", hn_150_dir, 1.5),
-            hard_negative_stage(5, "MRI hard-neg weight 2.0", hn_200_dir, 2.0),
-            hard_negative_stage(6, "MRI hard-neg weight 1.5 + positive weight 1.2", hn_150_pos_dir, 1.5, 1.2),
-            hard_negative_stage(7, "MRI hard-neg weight 2.0 + positive weight 1.2", hn_200_pos_dir, 2.0, 1.2),
+            hard_negative_stage(3, "MRI hard-neg weight 1.25 + positive weight 1.1", hn_125_pos110_dir, 1.25, 1.1),
+            hard_negative_stage(4, "MRI hard-neg weight 1.25 + positive weight 1.2", hn_125_pos120_dir, 1.25, 1.2),
+            hard_negative_stage(5, "MRI hard-neg weight 1.4 + positive weight 1.2", hn_140_pos120_dir, 1.4, 1.2),
+            hard_negative_stage(6, "MRI hard-neg weight 1.5 + positive weight 1.3", hn_150_pos130_dir, 1.5, 1.3),
         ]
     )
 
@@ -344,53 +342,43 @@ def main():
             "split": "test",
         },
         {
-            "model": "MRI HN w=1.25",
+            "model": "MRI HN w=1.25 + pos=1.1",
             "init": "Large-text ckpt",
             "train_data": "paired text",
             "mri_used": "Yes",
             "loss": "weighted CE",
             "test": "paired test 280",
-            "dir": hn_125_dir,
+            "dir": hn_125_pos110_dir,
             "split": "test",
         },
         {
-            "model": "MRI HN w=1.5",
+            "model": "MRI HN w=1.25 + pos=1.2",
             "init": "Large-text ckpt",
             "train_data": "paired text",
             "mri_used": "Yes",
             "loss": "weighted CE",
             "test": "paired test 280",
-            "dir": hn_150_dir,
+            "dir": hn_125_pos120_dir,
             "split": "test",
         },
         {
-            "model": "MRI HN w=2.0",
+            "model": "MRI HN w=1.4 + pos=1.2",
             "init": "Large-text ckpt",
             "train_data": "paired text",
             "mri_used": "Yes",
             "loss": "weighted CE",
             "test": "paired test 280",
-            "dir": hn_200_dir,
+            "dir": hn_140_pos120_dir,
             "split": "test",
         },
         {
-            "model": "MRI HN w=1.5 + pos=1.2",
+            "model": "MRI HN w=1.5 + pos=1.3",
             "init": "Large-text ckpt",
             "train_data": "paired text",
             "mri_used": "Yes",
             "loss": "weighted CE",
             "test": "paired test 280",
-            "dir": hn_150_pos_dir,
-            "split": "test",
-        },
-        {
-            "model": "MRI HN w=2.0 + pos=1.2",
-            "init": "Large-text ckpt",
-            "train_data": "paired text",
-            "mri_used": "Yes",
-            "loss": "weighted CE",
-            "test": "paired test 280",
-            "dir": hn_200_pos_dir,
+            "dir": hn_150_pos130_dir,
             "split": "test",
         },
     ]
