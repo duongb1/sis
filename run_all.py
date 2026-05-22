@@ -49,6 +49,9 @@ def parse_args():
 
     p.add_argument("--cpu", action="store_true")
     p.add_argument("--no-mgpu", action="store_true")
+    p.add_argument("--include-control", action="store_true")
+    p.add_argument("--include-ablation", action="store_true")
+    p.add_argument("--include-all", action="store_true")
     p.add_argument("--dry-run", action="store_true")
     return p.parse_args()
 
@@ -236,7 +239,7 @@ def main():
     large_ckpt = large_text_dir / "best_auc_phobert"
     mri_ckpt = mri_dir / "best_auc_model.pt"
 
-    stages = [
+    main_stages = [
         (
             "0. MRI-only teacher: paired MRI train -> paired MRI test 280",
             [
@@ -306,6 +309,9 @@ def main():
                 *device_flags,
             ] + (["--detach-aux"] if args.detach_aux else []),
         ),
+    ]
+
+    ablation_stages = [
         (
             "5. Large-text CE: PhoBERT -> ~20K train -> ~20K test",
             [
@@ -399,6 +405,9 @@ def main():
                 *device_flags,
             ] + (["--detach-aux"] if args.detach_aux else []),
         ),
+    ]
+
+    control_stages = [
         (
             "12. Shuffled KD control",
             [
@@ -430,6 +439,11 @@ def main():
             ],
         ),
     ]
+    stages = list(main_stages)
+    if args.include_ablation or args.include_all:
+        stages.extend(ablation_stages)
+    if args.include_control or args.include_all:
+        stages.extend(control_stages)
 
     manifest = {
         "images": args.images,
@@ -437,6 +451,8 @@ def main():
         "out_root": str(out_root),
         "large_text_checkpoint": str(large_ckpt),
         "mri_teacher_checkpoint": str(mri_ckpt),
+        "include_control": bool(args.include_control or args.include_all),
+        "include_ablation": bool(args.include_ablation or args.include_all),
         "stages": [{"name": name, "command": cmd} for name, cmd in stages],
     }
     with open(out_root / "run_manifest.json", "w", encoding="utf-8") as f:
@@ -501,6 +517,9 @@ def main():
             "dir": paired_dual_dir,
             "split": "test",
         },
+    ]
+    if args.include_ablation or args.include_all:
+        summary_rows.extend([
         {
             "group": "ablation",
             "model": "Large-text CE",
@@ -578,6 +597,9 @@ def main():
             "dir": large_dual_dir,
             "split": "test",
         },
+        ])
+    if args.include_control or args.include_all:
+        summary_rows.extend([
         {
             "group": "control",
             "model": "Shuffled KD",
@@ -600,7 +622,7 @@ def main():
             "dir": lupi_shuffle_dir,
             "split": "test",
         },
-    ]
+        ])
     if not args.dry_run:
         summarize_results(out_root, summary_rows)
 

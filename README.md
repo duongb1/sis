@@ -138,13 +138,21 @@ python train_lupi.py \
 
 `train_dual_mri_align.py` uses MRI penultimate ResNet50 features only during training. Validation/test metrics come only from the main text classification node.
 
-To run everything above once with synchronized defaults:
+By default, `run_all.py` runs only the main results table to save time:
 
 ```bash
 python run_all.py \
   --images /kaggle/input/datasets/duongb/cthsis/images \
   --texts /kaggle/input/datasets/duongb/cthsis/texts \
   --out-root /kaggle/working/sis_runs
+```
+
+Optional flags:
+
+```bash
+python run_all.py --include-control   # add shuffled KD/LUPI controls
+python run_all.py --include-ablation  # add large-text/weighted/confidence variants
+python run_all.py --include-all       # run main + control + ablation
 ```
 
 At the end, `run_all.py` prints three tables:
