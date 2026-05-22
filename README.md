@@ -147,7 +147,13 @@ python run_all.py \
   --out-root /kaggle/working/sis_runs
 ```
 
-At the end, `run_all.py` prints one summary table with `Acc`, `F1`, `AUC`, sensitivity, specificity, and confusion matrix `[[TN, FP], [FN, TP]]`, then writes:
+At the end, `run_all.py` prints three tables:
+
+- `MAIN RESULTS`: MRI-only teacher, Paired-only CE, Paired-only MRI-KD, Paired-only MRI-LUPI, Paired-only Dual MRI-Align.
+- `CONTROL EXPERIMENTS`: shuffled KD/LUPI.
+- `ABLATION / APPENDIX`: large-text and sensitivity/confidence variants.
+
+Each table includes `Acc`, `F1`, `AUC`, sensitivity, specificity, and confusion matrix `[[TN, FP], [FN, TP]]`. The script also writes:
 
 - `/kaggle/working/sis_runs/summary_results.csv`
 - `/kaggle/working/sis_runs/summary_results.json`

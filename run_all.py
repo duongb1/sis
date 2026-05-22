@@ -109,12 +109,12 @@ def read_confusion_matrix(run_dir, split):
     return [[tn, fp], [fn, tp]]
 
 
-def summarize_results(out_root, rows):
+def build_summary(rows):
     summary = []
     for row in rows:
         metrics = read_split_metrics(row["dir"], row["split"])
         cm = read_confusion_matrix(row["dir"], row["split"])
-        item = {k: row[k] for k in ["model", "init", "train_data", "mri_used", "loss", "test"]}
+        item = {k: row[k] for k in ["group", "model", "init", "train_data", "mri_used", "loss", "test"]}
         item["metrics_file"] = str(row["dir"] / "metrics.json")
         item["confusion_matrix"] = cm
         if metrics is None:
@@ -136,19 +136,12 @@ def summarize_results(out_root, rows):
                 }
             )
         summary.append(item)
+    return summary
 
-    json_path = out_root / "summary_results.json"
-    csv_path = out_root / "summary_results.csv"
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(summary, f, ensure_ascii=False, indent=2)
-    fieldnames = ["model", "init", "train_data", "mri_used", "loss", "test", "accuracy", "f1", "auc", "sensitivity", "specificity", "tn", "fp", "fn", "tp", "loss_value", "threshold", "confusion_matrix", "metrics_file"]
-    with open(csv_path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(summary)
 
+def print_summary_table(title, summary):
     print("\n" + "=" * 120)
-    print("SUMMARY RESULTS")
+    print(title)
     print("=" * 120)
     columns = [
         ("Model", "model", 32),
@@ -169,6 +162,24 @@ def summarize_results(out_root, rows):
     print("-" * len(header))
     for row in summary:
         print(" | ".join(fmt(row[key])[:width].ljust(width) for _, key, width in columns))
+
+
+def summarize_results(out_root, rows):
+    summary = build_summary(rows)
+
+    json_path = out_root / "summary_results.json"
+    csv_path = out_root / "summary_results.csv"
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(summary, f, ensure_ascii=False, indent=2)
+    fieldnames = ["group", "model", "init", "train_data", "mri_used", "loss", "test", "accuracy", "f1", "auc", "sensitivity", "specificity", "tn", "fp", "fn", "tp", "loss_value", "threshold", "confusion_matrix", "metrics_file"]
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(summary)
+
+    print_summary_table("MAIN RESULTS", [row for row in summary if row["group"] == "main"])
+    print_summary_table("CONTROL EXPERIMENTS", [row for row in summary if row["group"] == "control"])
+    print_summary_table("ABLATION / APPENDIX", [row for row in summary if row["group"] == "ablation"])
     print(f"\nSaved: {csv_path}")
     print(f"Saved: {json_path}")
 
@@ -436,6 +447,7 @@ def main():
 
     summary_rows = [
         {
+            "group": "main",
             "model": "MRI-only teacher",
             "init": "ImageNet",
             "train_data": "paired MRI",
@@ -446,6 +458,7 @@ def main():
             "split": "test",
         },
         {
+            "group": "main",
             "model": "Paired-only CE",
             "init": "PhoBERT",
             "train_data": "paired text",
@@ -456,6 +469,7 @@ def main():
             "split": "test",
         },
         {
+            "group": "main",
             "model": "Paired-only MRI-KD",
             "init": "PhoBERT",
             "train_data": "paired text",
@@ -466,6 +480,7 @@ def main():
             "split": "test",
         },
         {
+            "group": "main",
             "model": "Paired-only MRI-LUPI",
             "init": "PhoBERT",
             "train_data": "paired text",
@@ -476,6 +491,7 @@ def main():
             "split": "test",
         },
         {
+            "group": "main",
             "model": "Paired-only Dual MRI-Align",
             "init": "PhoBERT",
             "train_data": "paired text",
@@ -486,6 +502,7 @@ def main():
             "split": "test",
         },
         {
+            "group": "ablation",
             "model": "Large-text CE",
             "init": "PhoBERT",
             "train_data": "~20K text",
@@ -496,6 +513,7 @@ def main():
             "split": "test",
         },
         {
+            "group": "ablation",
             "model": "Large-text -> paired CE",
             "init": "Large-text ckpt",
             "train_data": "paired text",
@@ -506,6 +524,7 @@ def main():
             "split": "test",
         },
         {
+            "group": "ablation",
             "model": "Large-text -> weighted CE",
             "init": "Large-text ckpt",
             "train_data": "paired text",
@@ -516,6 +535,7 @@ def main():
             "split": "test",
         },
         {
+            "group": "ablation",
             "model": "Large-text -> paired KD",
             "init": "Large-text ckpt",
             "train_data": "paired text",
@@ -526,6 +546,7 @@ def main():
             "split": "test",
         },
         {
+            "group": "ablation",
             "model": "Large-text -> conf KD",
             "init": "Large-text ckpt",
             "train_data": "paired text",
@@ -536,6 +557,7 @@ def main():
             "split": "test",
         },
         {
+            "group": "ablation",
             "model": "Large-text -> paired LUPI",
             "init": "Large-text ckpt",
             "train_data": "paired text",
@@ -546,6 +568,7 @@ def main():
             "split": "test",
         },
         {
+            "group": "ablation",
             "model": "Large-text -> Dual MRI-Align",
             "init": "Large-text ckpt",
             "train_data": "paired text",
@@ -556,6 +579,7 @@ def main():
             "split": "test",
         },
         {
+            "group": "control",
             "model": "Shuffled KD",
             "init": "Large-text ckpt",
             "train_data": "paired text",
@@ -566,6 +590,7 @@ def main():
             "split": "test",
         },
         {
+            "group": "control",
             "model": "Shuffled LUPI",
             "init": "Large-text ckpt",
             "train_data": "paired text",
