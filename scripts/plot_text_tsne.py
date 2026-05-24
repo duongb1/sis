@@ -49,6 +49,27 @@ def checkpoint_max_len(checkpoint):
         return json.load(f).get("max_length")
 
 
+def resolve_model_source(args):
+    if not args.checkpoint:
+        return args.model
+
+    checkpoint = Path(args.checkpoint).expanduser()
+    if not checkpoint.exists():
+        raise FileNotFoundError(
+            f"Checkpoint does not exist: {checkpoint}\n"
+            "Transformers will treat a missing absolute path as a Hugging Face repo id, which causes a confusing "
+            "HFValidationError. Check that the training stage created this directory, or pass the correct "
+            "--checkpoint path. For the default pipeline, expected paths are usually:\n"
+            "  /kaggle/working/sis_runs/01_large_text_ce/best_auc_phobert\n"
+            "  /kaggle/working/sis_runs/02_paired_text_ce/best_auc_phobert"
+        )
+    if not checkpoint.is_dir():
+        raise NotADirectoryError(f"--checkpoint must be a Hugging Face checkpoint directory, got: {checkpoint}")
+    if not (checkpoint / "config.json").exists():
+        raise FileNotFoundError(f"Checkpoint directory is missing config.json: {checkpoint}")
+    return str(checkpoint)
+
+
 def balanced_sample(records, limit, seed):
     if limit <= 0:
         return records
@@ -171,6 +192,7 @@ def plot_split_panels(path, records, points):
 def main():
     args = parse_args()
     seed_all(args.seed)
+    model_name_or_path = resolve_model_source(args)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
 
@@ -182,7 +204,6 @@ def main():
     if not records:
         raise RuntimeError("Need non-empty large/paired text records.")
 
-    model_name_or_path = args.checkpoint or args.model
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, use_fast=False)
     model = AutoModel.from_pretrained(model_name_or_path)
     requested_max_len = args.max_len or (checkpoint_max_len(args.checkpoint) if args.checkpoint else None) or 512

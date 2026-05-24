@@ -125,3 +125,7 @@ text_tsne_summary.json
 ```
 
 Use `--sample-per-group N` to limit each dataset/split/label group before fitting t-SNE.
+
+Make sure the `--checkpoint` directory exists and contains a Hugging Face checkpoint (`config.json`, model weights,
+and tokenizer files). If you have not trained the text model in the current Kaggle session yet, run `run_all.py` or
+point `--checkpoint` to the actual saved `best_auc_phobert` directory.
