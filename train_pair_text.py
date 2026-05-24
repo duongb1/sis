@@ -7,6 +7,11 @@ import numpy as np
 import torch
 from sklearn.metrics import confusion_matrix
 from torch.utils.data import DataLoader
+
+from sislib.common import quiet_hf_logging
+
+quiet_hf_logging()
+
 from transformers import AutoModelForSequenceClassification, AutoTokenizer, get_linear_schedule_with_warmup
 
 from sislib.common import get_device, resolve_max_len, round_float, round_metrics, seed_all, split_records, to_device, unwrap
