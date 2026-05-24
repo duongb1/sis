@@ -127,7 +127,6 @@ def main():
 
     train_tf, eval_tf = mri_transforms(args.size)
     train_loader = DataLoader(MRIDataset(train_rows, train_tf), batch_size=args.batch, shuffle=True, num_workers=args.workers, pin_memory=device.type == "cuda")
-    train_eval_loader = DataLoader(MRIDataset(train_rows, eval_tf), batch_size=args.batch, shuffle=False, num_workers=args.workers, pin_memory=device.type == "cuda")
     val_loader = DataLoader(MRIDataset(val_rows, eval_tf), batch_size=args.batch, shuffle=False, num_workers=args.workers, pin_memory=device.type == "cuda")
     test_loader = DataLoader(MRIDataset(test_rows, eval_tf), batch_size=args.batch, shuffle=False, num_workers=args.workers, pin_memory=device.type == "cuda") if test_rows else None
 
@@ -155,7 +154,7 @@ def main():
     ckpt = torch.load(best_path, map_location=device, weights_only=False)
     unwrap(model).load_state_dict(ckpt["model_state"])
     all_metrics = {}
-    for split, loader in [("train", train_eval_loader), ("val", val_loader), ("test", test_loader)]:
+    for split, loader in [("val", val_loader), ("test", test_loader)]:
         if loader is None:
             continue
         metrics, ids, y, logits, p, pred = eval_mri(model, loader, device, args.threshold)
