@@ -20,6 +20,7 @@ def cls_metrics(labels, probs, preds, loss=None, id_name="num_samples", threshol
         "auc": float(roc_auc_score(labels, probs)) if len(np.unique(labels)) == 2 else float("nan"),
         "sensitivity": float(tp / (tp + fn)) if (tp + fn) else float("nan"),
         "specificity": float(tn / (tn + fp)) if (tn + fp) else float("nan"),
+        "confusion_matrix": [[tn, fp], [fn, tp]],
         id_name: int(len(labels)),
         "num_co": int((labels == 1).sum()),
         "num_khong": int((labels == 0).sum()),
