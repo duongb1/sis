@@ -101,3 +101,27 @@ Metrics include accuracy, F1, AUC, sensitivity, and specificity.
 - `train_text.py`: train large text-only PhoBERT checkpoint.
 - `train_pair_text.py`: train paired text-only PhoBERT baseline.
 - `scripts/eval_text_checkpoint.py`: evaluate a text checkpoint directly on either large or paired test split.
+- `scripts/plot_text_tsne.py`: extract text embeddings and plot t-SNE for large text vs paired text on train/val/test.
+
+## Text t-SNE
+
+Plot both text datasets on all three splits using a trained checkpoint:
+
+```bash
+python scripts/plot_text_tsne.py \
+  --checkpoint /kaggle/working/sis_runs/01_large_text_ce/best_auc_phobert \
+  --texts /kaggle/input/datasets/duongb/cthsis/texts \
+  --images /kaggle/input/datasets/duongb/cthsis/images \
+  --out /kaggle/working/sis_runs/04_text_tsne
+```
+
+Outputs:
+
+```text
+text_tsne_by_split.png
+text_tsne_points.csv
+text_embeddings.npy
+text_tsne_summary.json
+```
+
+Use `--sample-per-group N` to limit each dataset/split/label group before fitting t-SNE.
