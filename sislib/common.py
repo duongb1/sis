@@ -1,4 +1,5 @@
 import random
+import os
 from pathlib import Path
 
 import numpy as np
@@ -9,6 +10,18 @@ LABEL_TO_ID = {"khong": 0, "co": 1}
 ID_TO_LABEL = {0: "khong", 1: "co"}
 SPLITS = ["train", "val", "test"]
 LABELS = ["co", "khong"]
+
+
+def quiet_hf_logging():
+    os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+    os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
+    try:
+        from transformers.utils import logging as hf_logging
+
+        hf_logging.set_verbosity_error()
+        hf_logging.disable_progress_bar()
+    except Exception:
+        pass
 
 
 def seed_all(seed):

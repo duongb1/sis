@@ -4,6 +4,11 @@ from pathlib import Path
 
 from sklearn.metrics import confusion_matrix
 from torch.utils.data import DataLoader
+
+from sislib.common import quiet_hf_logging
+
+quiet_hf_logging()
+
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
 from sislib.common import get_device, resolve_max_len, round_metrics, seed_all, to_device
