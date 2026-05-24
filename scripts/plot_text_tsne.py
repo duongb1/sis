@@ -51,23 +51,26 @@ def checkpoint_max_len(checkpoint):
 
 def resolve_model_source(args):
     if not args.checkpoint:
-        return args.model
+        return args.model, "base_model"
 
     checkpoint = Path(args.checkpoint).expanduser()
     if not checkpoint.exists():
-        raise FileNotFoundError(
-            f"Checkpoint does not exist: {checkpoint}\n"
-            "Transformers will treat a missing absolute path as a Hugging Face repo id, which causes a confusing "
-            "HFValidationError. Check that the training stage created this directory, or pass the correct "
-            "--checkpoint path. For the default pipeline, expected paths are usually:\n"
-            "  /kaggle/working/sis_runs/01_large_text_ce/best_auc_phobert\n"
-            "  /kaggle/working/sis_runs/02_paired_text_ce/best_auc_phobert"
+        print(
+            f"Checkpoint not found: {checkpoint}\n"
+            f"Falling back to base model for embedding extraction: {args.model}",
+            file=sys.stderr,
         )
-    if not checkpoint.is_dir():
+        return args.model, "fallback_base_model"
+    if checkpoint.is_file():
         raise NotADirectoryError(f"--checkpoint must be a Hugging Face checkpoint directory, got: {checkpoint}")
     if not (checkpoint / "config.json").exists():
-        raise FileNotFoundError(f"Checkpoint directory is missing config.json: {checkpoint}")
-    return str(checkpoint)
+        print(
+            f"Checkpoint directory is missing config.json: {checkpoint}\n"
+            f"Falling back to base model for embedding extraction: {args.model}",
+            file=sys.stderr,
+        )
+        return args.model, "fallback_base_model"
+    return str(checkpoint), "checkpoint"
 
 
 def balanced_sample(records, limit, seed):
@@ -192,7 +195,7 @@ def plot_split_panels(path, records, points):
 def main():
     args = parse_args()
     seed_all(args.seed)
-    model_name_or_path = resolve_model_source(args)
+    model_name_or_path, model_source = resolve_model_source(args)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
 
@@ -229,6 +232,8 @@ def main():
 
     summary = {
         "model": str(Path(model_name_or_path).resolve()) if Path(model_name_or_path).exists() else model_name_or_path,
+        "model_source": model_source,
+        "requested_checkpoint": args.checkpoint,
         "large_root": str(Path(large_root).resolve()),
         "paired_root": str(Path(paired_root).resolve()),
         "max_len": max_len,
