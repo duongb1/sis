@@ -102,6 +102,7 @@ Metrics include accuracy, F1, AUC, sensitivity, and specificity.
 - `train_pair_text.py`: train paired text-only PhoBERT baseline.
 - `scripts/eval_text_checkpoint.py`: evaluate a text checkpoint directly on either large or paired test split.
 - `scripts/plot_text_tsne.py`: extract text embeddings and plot t-SNE for large text vs paired text on train/val/test.
+- `scripts/text_centroid_distance.py`: compute class-wise centroid distances between large and paired text embeddings.
 
 ## Text t-SNE
 
@@ -133,3 +134,27 @@ text_tsne_summary.json
 
 Use `--sample-per-group N` to limit each dataset/split/label group before fitting t-SNE. To always use base PhoBERT
 instead of a trained checkpoint, omit `--checkpoint` or pass `--model vinai/phobert-base`.
+
+## Text Centroid Distance
+
+Compute class-wise centroid distances for large vs paired text embeddings:
+
+```bash
+python scripts/text_centroid_distance.py \
+  --checkpoint /kaggle/working/sis_runs/01_large_text_ce/best_auc_phobert \
+  --texts /kaggle/input/datasets/duongb/cthsis/texts \
+  --images /kaggle/input/datasets/duongb/cthsis/images \
+  --out /kaggle/working/sis_runs/05_text_centroids
+```
+
+If `--checkpoint` is missing, the script falls back to `vinai/phobert-base`.
+
+Outputs:
+
+```text
+centroid_distances.csv
+centroid_group_counts.csv
+centroid_distance_summary.json
+text_centroids.npz
+text_embeddings_for_centroids.npy
+```
