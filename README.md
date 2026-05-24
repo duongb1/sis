@@ -119,8 +119,14 @@ python scripts/plot_text_tsne.py \
 Outputs:
 
 ```text
-text_tsne_by_split.png
-text_tsne_points.csv
+text_tsne_6_panels.png
+separate_figures/text_tsne_large_train.png
+separate_figures/text_tsne_large_val.png
+separate_figures/text_tsne_large_test.png
+separate_figures/text_tsne_paired_train.png
+separate_figures/text_tsne_paired_val.png
+separate_figures/text_tsne_paired_test.png
+text_tsne_separate_points.csv
 text_embeddings.npy
 text_tsne_summary.json
 ```

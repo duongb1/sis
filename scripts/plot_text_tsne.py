@@ -125,71 +125,106 @@ def fit_tsne(embeddings, seed, requested_perplexity):
     return tsne.fit_transform(embeddings), perplexity
 
 
-def save_points(path, records, points):
-    fieldnames = ["plot_id", "dataset", "split", "label", "label_name", "text_path", "tsne_x", "tsne_y"]
+def save_separate_points(path, rows):
+    fieldnames = [
+        "plot_id",
+        "dataset",
+        "split",
+        "label",
+        "label_name",
+        "text_path",
+        "tsne_x",
+        "tsne_y",
+        "perplexity",
+    ]
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
-        for row, xy in zip(records, points):
-            writer.writerow(
-                {
-                    "plot_id": row["plot_id"],
-                    "dataset": row["dataset"],
-                    "split": row["split"],
-                    "label": row["label"],
-                    "label_name": row["label_name"],
-                    "text_path": row["text_path"],
-                    "tsne_x": float(xy[0]),
-                    "tsne_y": float(xy[1]),
-                }
-            )
+        writer.writerows(rows)
 
 
-def plot_split_panels(path, records, points):
+def plot_one_tsne(ax, rows, points, title):
     colors = {0: "#2878b5", 1: "#d55e00"}
-    markers = {"large": "o", "paired": "^"}
-    labels = {
-        ("large", 0): "large/khong",
-        ("large", 1): "large/co",
-        ("paired", 0): "paired/khong",
-        ("paired", 1): "paired/co",
-    }
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5), sharex=True, sharey=True)
-    for ax, split in zip(axes, SPLITS):
-        split_idx = [i for i, row in enumerate(records) if row["split"] == split]
-        for dataset in ("large", "paired"):
-            for label in (0, 1):
-                idx = [i for i in split_idx if records[i]["dataset"] == dataset and records[i]["label"] == label]
-                if not idx:
-                    continue
-                xy = points[idx]
-                ax.scatter(
-                    xy[:, 0],
-                    xy[:, 1],
-                    s=18,
-                    c=colors[label],
-                    marker=markers[dataset],
-                    alpha=0.72,
-                    linewidths=0.2,
-                    edgecolors="white",
-                    label=labels[(dataset, label)],
+    for label, label_name in ((0, "khong"), (1, "co")):
+        idx = [i for i, row in enumerate(rows) if row["label"] == label]
+        if not idx:
+            continue
+        xy = points[idx]
+        ax.scatter(
+            xy[:, 0],
+            xy[:, 1],
+            s=20,
+            c=colors[label],
+            alpha=0.75,
+            linewidths=0.2,
+            edgecolors="white",
+            label=label_name,
+        )
+    ax.set_title(f"{title} (n={len(rows)})")
+    ax.set_xlabel("t-SNE 1")
+    ax.set_ylabel("t-SNE 2")
+    ax.grid(alpha=0.2)
+
+
+def plot_separate_tsne(out, records, embeddings, seed, requested_perplexity):
+    figures_dir = out / "separate_figures"
+    figures_dir.mkdir(parents=True, exist_ok=True)
+    separate_rows = []
+    summary = {}
+    fig, axes = plt.subplots(2, 3, figsize=(17, 10))
+    for row_idx, dataset in enumerate(("large", "paired")):
+        for col_idx, split in enumerate(SPLITS):
+            ax = axes[row_idx][col_idx]
+            idx = [i for i, row in enumerate(records) if row["dataset"] == dataset and row["split"] == split]
+            title = f"{dataset} / {split}"
+            if len(idx) < 2:
+                ax.set_title(f"{title} (n={len(idx)})")
+                ax.axis("off")
+                summary[f"{dataset}/{split}"] = {"samples": len(idx), "perplexity": None}
+                continue
+
+            subset_records = [records[i] for i in idx]
+            subset_points, perplexity = fit_tsne(embeddings[idx], seed, requested_perplexity)
+            plot_one_tsne(ax, subset_records, subset_points, title)
+            summary[f"{dataset}/{split}"] = {"samples": len(idx), "perplexity": perplexity}
+
+            single_fig, single_ax = plt.subplots(figsize=(7, 6))
+            plot_one_tsne(single_ax, subset_records, subset_points, title)
+            single_ax.legend(loc="best", frameon=False)
+            single_fig.tight_layout()
+            single_fig.savefig(figures_dir / f"text_tsne_{dataset}_{split}.png", dpi=300)
+            plt.close(single_fig)
+
+            for row, xy in zip(subset_records, subset_points):
+                separate_rows.append(
+                    {
+                        "plot_id": row["plot_id"],
+                        "dataset": row["dataset"],
+                        "split": row["split"],
+                        "label": row["label"],
+                        "label_name": row["label_name"],
+                        "text_path": row["text_path"],
+                        "tsne_x": float(xy[0]),
+                        "tsne_y": float(xy[1]),
+                        "perplexity": float(perplexity),
+                    }
                 )
-        ax.set_title(split)
-        ax.set_xlabel("t-SNE 1")
-        ax.grid(alpha=0.2)
-    axes[0].set_ylabel("t-SNE 2")
+
     handles, legend_labels = [], []
-    for ax in axes:
+    for ax in axes.ravel():
         ax_handles, ax_labels = ax.get_legend_handles_labels()
         for handle, label in zip(ax_handles, ax_labels):
             if label not in legend_labels:
                 handles.append(handle)
                 legend_labels.append(label)
-    fig.legend(handles, legend_labels, loc="lower center", ncol=4, frameon=False)
-    fig.suptitle("Text embedding t-SNE: large text vs paired text")
-    fig.tight_layout(rect=(0, 0.08, 1, 0.94))
-    fig.savefig(path, dpi=300)
+    if handles:
+        fig.legend(handles, legend_labels, loc="lower center", ncol=2, frameon=False)
+    fig.suptitle("Text embedding t-SNE by dataset and split")
+    fig.tight_layout(rect=(0, 0.05, 1, 0.95))
+    fig.savefig(out / "text_tsne_6_panels.png", dpi=300)
     plt.close(fig)
+    save_separate_points(out / "text_tsne_separate_points.csv", separate_rows)
+    return summary
 
 
 def main():
@@ -225,10 +260,8 @@ def main():
     if ids != [row["id"] for row in records]:
         raise RuntimeError("Embedding order mismatch.")
 
-    points, used_perplexity = fit_tsne(embeddings, args.seed, args.perplexity)
-    save_points(out / "text_tsne_points.csv", records, points)
     np.save(out / "text_embeddings.npy", embeddings)
-    plot_split_panels(out / "text_tsne_by_split.png", records, points)
+    separate_summary = plot_separate_tsne(out, records, embeddings, args.seed, args.perplexity)
 
     summary = {
         "model": str(Path(model_name_or_path).resolve()) if Path(model_name_or_path).exists() else model_name_or_path,
@@ -237,9 +270,9 @@ def main():
         "large_root": str(Path(large_root).resolve()),
         "paired_root": str(Path(paired_root).resolve()),
         "max_len": max_len,
-        "perplexity": used_perplexity,
         "samples": len(records),
         "by_dataset_split": {},
+        "separate_tsne": separate_summary,
     }
     for dataset in ("large", "paired"):
         for split in SPLITS:
@@ -249,8 +282,9 @@ def main():
     with open(out / "text_tsne_summary.json", "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)
 
-    print(f"Saved t-SNE figure: {(out / 'text_tsne_by_split.png').resolve()}")
-    print(f"Saved t-SNE points: {(out / 'text_tsne_points.csv').resolve()}")
+    print(f"Saved 6-panel t-SNE figure: {(out / 'text_tsne_6_panels.png').resolve()}")
+    print(f"Saved separate t-SNE figures: {(out / 'separate_figures').resolve()}")
+    print(f"Saved separate t-SNE points: {(out / 'text_tsne_separate_points.csv').resolve()}")
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
 
