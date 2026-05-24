@@ -7,10 +7,10 @@ from torch.utils.data import Dataset
 from .common import LABELS, LABEL_TO_ID, SPLITS, read_text
 
 
-def collect_large_text(root):
+def collect_large_text(root, splits=SPLITS):
     root = Path(root)
     records, skipped = [], []
-    for split in SPLITS:
+    for split in splits:
         for label in LABELS:
             label_dir = root / split / label
             if not label_dir.exists():
