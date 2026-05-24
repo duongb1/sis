@@ -1,8 +1,11 @@
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
 
 
 def parse_args():
@@ -43,7 +46,10 @@ def run_stage(name, cmd, done_path, force=False, dry_run=False):
         return
     if dry_run:
         return
-    subprocess.run([str(x) for x in cmd], check=True)
+    env = os.environ.copy()
+    pythonpath = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = str(ROOT) if not pythonpath else os.pathsep.join([str(ROOT), pythonpath])
+    subprocess.run([str(x) for x in cmd], check=True, cwd=ROOT, env=env)
 
 
 def add_common_flags(cmd, args):
