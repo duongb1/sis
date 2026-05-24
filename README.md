@@ -105,7 +105,8 @@ Metrics include accuracy, F1, AUC, sensitivity, and specificity.
 
 ## Text t-SNE
 
-Plot both text datasets on all three splits using a trained checkpoint:
+Plot both text datasets on all three splits. If the checkpoint exists, embeddings are extracted from that checkpoint;
+otherwise the script falls back to the base PhoBERT model from `--model`:
 
 ```bash
 python scripts/plot_text_tsne.py \
@@ -124,8 +125,5 @@ text_embeddings.npy
 text_tsne_summary.json
 ```
 
-Use `--sample-per-group N` to limit each dataset/split/label group before fitting t-SNE.
-
-Make sure the `--checkpoint` directory exists and contains a Hugging Face checkpoint (`config.json`, model weights,
-and tokenizer files). If you have not trained the text model in the current Kaggle session yet, run `run_all.py` or
-point `--checkpoint` to the actual saved `best_auc_phobert` directory.
+Use `--sample-per-group N` to limit each dataset/split/label group before fitting t-SNE. To always use base PhoBERT
+instead of a trained checkpoint, omit `--checkpoint` or pass `--model vinai/phobert-base`.
