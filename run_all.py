@@ -1,4 +1,5 @@
 import argparse
+import csv
 import json
 import os
 import subprocess
@@ -111,14 +112,34 @@ def load_json(path):
         return json.load(f)
 
 
+def load_confusion_matrix(path):
+    path = Path(path)
+    if not path.exists():
+        return None
+    tn = fp = fn = tp = 0
+    with open(path, "r", newline="", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            label = int(row["true_label"])
+            pred = int(row["pred_label"])
+            if label == 0 and pred == 0:
+                tn += 1
+            elif label == 0 and pred == 1:
+                fp += 1
+            elif label == 1 and pred == 0:
+                fn += 1
+            elif label == 1 and pred == 1:
+                tp += 1
+    return [[tn, fp], [fn, tp]]
+
+
 def print_metric_summary(root):
     rows = []
-    for name, metrics_path in [
-        ("MRI-only teacher", root / "00_mri_teacher" / "metrics.json"),
-        ("Large-text CE", root / "01_large_text_ce" / "metrics.json"),
-        ("Paired-only CE", root / "02_paired_text_ce" / "metrics.json"),
-        ("Large checkpoint on paired test", root / "03_cross_test" / "large_on_paired_test" / "metrics.json"),
-        ("Paired checkpoint on large test", root / "03_cross_test" / "paired_on_large_test" / "metrics.json"),
+    for name, metrics_path, pred_path in [
+        ("MRI-only teacher", root / "00_mri_teacher" / "metrics.json", root / "00_mri_teacher" / "test_predictions_best_auc.csv"),
+        ("Large-text CE", root / "01_large_text_ce" / "metrics.json", root / "01_large_text_ce" / "test_predictions_best_auc.csv"),
+        ("Paired-only CE", root / "02_paired_text_ce" / "metrics.json", root / "02_paired_text_ce" / "test_predictions_best_auc.csv"),
+        ("Large checkpoint on paired test", root / "03_cross_test" / "large_on_paired_test" / "metrics.json", root / "03_cross_test" / "large_on_paired_test" / "test_predictions.csv"),
+        ("Paired checkpoint on large test", root / "03_cross_test" / "paired_on_large_test" / "metrics.json", root / "03_cross_test" / "paired_on_large_test" / "test_predictions.csv"),
     ]:
         metrics = load_json(metrics_path)
         if metrics and "test" in metrics:
@@ -131,6 +152,7 @@ def print_metric_summary(root):
                     "auc": test.get("auc"),
                     "sens": test.get("sensitivity"),
                     "spec": test.get("specificity"),
+                    "cm": test.get("confusion_matrix") or load_confusion_matrix(pred_path),
                 }
             )
     print("\n" + "=" * 80)
@@ -140,6 +162,8 @@ def print_metric_summary(root):
             f"{row['model']}: acc={row['acc']} f1={row['f1']} auc={row['auc']} "
             f"sens={row['sens']} spec={row['spec']}"
         )
+        if row["cm"] is not None:
+            print(f"  confusion_matrix [[TN, FP], [FN, TP]]: {row['cm']}")
 
 
 def main():
