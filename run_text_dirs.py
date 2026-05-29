@@ -13,6 +13,8 @@ def parse_args():
     p.add_argument("--small", default="/kaggle/input/datasets/duongb/cthsis/sis/small", help="Small text folder. Supports split/label/*.txt or split/{co,khong}.csv.")
     p.add_argument("--output_dir", default="/kaggle/working/sis_runs_text_dirs")
     p.add_argument("--model", default="vinai/phobert-base")
+    p.add_argument("--labels", default=None, help="Comma-separated class names. Defaults to union of labels in --large and --small.")
+    p.add_argument("--binary-positive-label", default="I63_INFARCTION", help="Class treated as positive for one-vs-rest binary metrics.")
     p.add_argument("--epochs", type=int, default=8)
     p.add_argument("--large_epochs", type=int, default=None)
     p.add_argument("--small_epochs", type=int, default=None)
@@ -32,6 +34,25 @@ def parse_args():
     return p.parse_args()
 
 
+def parse_labels_arg(value):
+    if value is None:
+        return None
+    labels = [item.strip() for item in str(value).split(",") if item.strip()]
+    return labels or None
+
+
+def discover_csv_labels(*roots):
+    labels = set()
+    for root in roots:
+        root = Path(root)
+        for split in ("train", "val", "test"):
+            split_dir = root / split
+            if split_dir.exists():
+                labels.update(path.stem for path in split_dir.glob("*.csv") if not path.name.startswith("._"))
+                labels.update(path.name for path in split_dir.iterdir() if path.is_dir())
+    return sorted(labels)
+
+
 def run_stage(name, cmd, done_path, force, dry_run):
     print("\n" + "=" * 80)
     print(name)
@@ -47,7 +68,7 @@ def run_stage(name, cmd, done_path, force, dry_run):
     subprocess.run([str(x) for x in cmd], check=True, cwd=ROOT, env=env)
 
 
-def train_cmd(args, data, out, epochs):
+def train_cmd(args, data, out, epochs, labels):
     cmd = [
         sys.executable,
         "train_text.py",
@@ -59,6 +80,10 @@ def train_cmd(args, data, out, epochs):
         args.model,
         "--epochs",
         epochs,
+        "--labels",
+        ",".join(labels),
+        "--binary-positive-label",
+        args.binary_positive_label,
         "--batch",
         args.batch,
         "--lr",
@@ -93,17 +118,21 @@ def main():
 
     large_out = out / "01_large_text_ce"
     small_out = out / "02_small_text_ce"
+    labels = parse_labels_arg(args.labels) or discover_csv_labels(args.large, args.small)
+    if len(labels) < 2:
+        raise RuntimeError(f"Need at least two labels across --large/--small, found: {labels}")
+    print(f"Labels ({len(labels)}): {', '.join(labels)}")
 
     run_stage(
         "1. Large text-only CE",
-        train_cmd(args, args.large, large_out, args.large_epochs or args.epochs),
+        train_cmd(args, args.large, large_out, args.large_epochs or args.epochs, labels),
         large_out / "best_auc_phobert",
         args.force,
         args.dry_run,
     )
     run_stage(
         "2. Small text-only CE",
-        train_cmd(args, args.small, small_out, args.small_epochs or args.epochs),
+        train_cmd(args, args.small, small_out, args.small_epochs or args.epochs, labels),
         small_out / "best_auc_phobert",
         args.force,
         args.dry_run,

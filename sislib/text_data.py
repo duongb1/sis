@@ -7,6 +7,30 @@ from torch.utils.data import Dataset
 from .common import LABELS, LABEL_TO_ID, SPLITS, read_text
 
 
+def parse_labels_arg(value):
+    if value is None:
+        return None
+    labels = [item.strip() for item in str(value).split(",") if item.strip()]
+    return labels or None
+
+
+def make_label_maps(labels):
+    labels = list(labels)
+    return {label: index for index, label in enumerate(labels)}, {index: label for index, label in enumerate(labels)}
+
+
+def discover_text_labels(root, splits=SPLITS):
+    root = Path(root)
+    labels = set()
+    for split in splits:
+        split_dir = root / split
+        if not split_dir.exists():
+            continue
+        labels.update(path.name for path in split_dir.iterdir() if path.is_dir())
+        labels.update(path.stem for path in split_dir.glob("*.csv") if not path.name.startswith("._"))
+    return sorted(labels)
+
+
 def _join_csv_row(row):
     parts = []
     for value in row.values():
@@ -16,10 +40,10 @@ def _join_csv_row(row):
     return "\n".join(parts).strip()
 
 
-def _collect_split_label_csv(root, splits):
+def _collect_split_label_csv(root, splits, labels, label_to_id):
     records, skipped = [], []
     for split in splits:
-        for label in LABELS:
+        for label in labels:
             csv_path = root / split / f"{label}.csv"
             if not csv_path.exists():
                 continue
@@ -34,7 +58,7 @@ def _collect_split_label_csv(root, splits):
                         {
                             "id": f"{split}/{label}/{csv_path.stem}_{index:06d}",
                             "split": split,
-                            "label": LABEL_TO_ID[label],
+                            "label": label_to_id[label],
                             "label_name": label,
                             "text_path": str(csv_path),
                             "text": text,
@@ -43,11 +67,17 @@ def _collect_split_label_csv(root, splits):
     return records, skipped
 
 
-def collect_large_text(root, splits=SPLITS):
+def collect_large_text(root, splits=SPLITS, labels=None, label_to_id=None):
     root = Path(root)
+    labels = list(labels) if labels is not None else discover_text_labels(root, splits)
+    if not labels:
+        labels = list(LABELS)
+    if label_to_id is None:
+        label_to_id, _ = make_label_maps(labels)
+
     records, skipped = [], []
     for split in splits:
-        for label in LABELS:
+        for label in labels:
             label_dir = root / split / label
             if not label_dir.exists():
                 continue
@@ -63,7 +93,7 @@ def collect_large_text(root, splits=SPLITS):
                     {
                         "id": f"{split}/{label}/{path.stem}",
                         "split": split,
-                        "label": LABEL_TO_ID[label],
+                        "label": label_to_id[label],
                         "label_name": label,
                         "text_path": str(path),
                         "text": text,
@@ -72,14 +102,14 @@ def collect_large_text(root, splits=SPLITS):
     if records:
         return records, skipped, root
 
-    csv_records, csv_skipped = _collect_split_label_csv(root, splits)
+    csv_records, csv_skipped = _collect_split_label_csv(root, splits, labels, label_to_id)
     records.extend(csv_records)
     skipped.extend(csv_skipped)
     return records, skipped, root
 
 
-def collect_small_text(root, splits=SPLITS):
-    return collect_large_text(root, splits=splits)
+def collect_small_text(root, splits=SPLITS, labels=None, label_to_id=None):
+    return collect_large_text(root, splits=splits, labels=labels, label_to_id=label_to_id)
 
 
 def resolve_image_root(root):

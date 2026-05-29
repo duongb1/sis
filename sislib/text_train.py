@@ -37,7 +37,7 @@ def ce_epoch(model, loader, optimizer, scheduler, scaler, device, accum=1):
 
 
 @torch.no_grad()
-def eval_text(model, loader, device, threshold=0.5, desc="Evaluating"):
+def eval_text(model, loader, device, threshold=0.5, desc="Evaluating", label_names=None, binary_positive_label=None):
     model.eval()
     total_loss, total_count = 0.0, 0
     ids, labels_all, probs_all = [], [], []
@@ -47,7 +47,7 @@ def eval_text(model, loader, device, threshold=0.5, desc="Evaluating"):
         labels = inputs["labels"]
         outputs = model(**inputs)
         loss = hf_loss(outputs, labels)
-        probs = torch.softmax(outputs.logits, dim=-1)[:, 1]
+        probs = torch.softmax(outputs.logits, dim=-1)
         bs = labels.size(0)
         total_loss += loss.item() * bs
         total_count += bs
@@ -56,6 +56,17 @@ def eval_text(model, loader, device, threshold=0.5, desc="Evaluating"):
         probs_all.extend(probs.detach().cpu().numpy().tolist())
     labels = np.array(labels_all, dtype=np.int64)
     probs = np.array(probs_all, dtype=np.float32)
-    preds = (probs >= threshold).astype(np.int64)
+    if probs.ndim == 2 and probs.shape[1] == 2:
+        preds = (probs[:, 1] >= threshold).astype(np.int64)
+    else:
+        preds = probs.argmax(axis=1).astype(np.int64)
     loss = total_loss / max(total_count, 1)
-    return cls_metrics(labels, probs, preds, loss=loss, threshold=threshold), ids, labels, probs, preds
+    return cls_metrics(
+        labels,
+        probs,
+        preds,
+        loss=loss,
+        threshold=threshold,
+        label_names=label_names,
+        binary_positive_label=binary_positive_label,
+    ), ids, labels, probs, preds
