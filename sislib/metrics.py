@@ -122,3 +122,27 @@ def save_preds(path, ids, labels, probs, preds, id_field, label_names=None, bina
                 row["pred_binary_i63"] = int(int(pred) == positive_index)
                 row["prob_binary_i63"] = round_float(prob_row[positive_index])
             writer.writerow(row)
+
+
+def format_metrics_summary(name, metrics):
+    parts = [
+        f"{name}:",
+        f"loss={metrics.get('loss', float('nan'))}",
+        f"acc={metrics.get('accuracy', float('nan'))}",
+        f"f1_macro={metrics.get('f1_macro', metrics.get('f1', float('nan')))}",
+        f"f1_weighted={metrics.get('f1_weighted', float('nan'))}",
+        f"auc={metrics.get('auc', float('nan'))}",
+    ]
+    lines = [" ".join(str(part) for part in parts)]
+    binary = metrics.get("binary_i63")
+    if binary:
+        lines.append(
+            "binary_i63: "
+            f"acc={binary.get('accuracy')} "
+            f"f1={binary.get('f1')} "
+            f"auc={binary.get('auc')} "
+            f"sens={binary.get('sensitivity')} "
+            f"spec={binary.get('specificity')} "
+            f"cm={binary.get('confusion_matrix')}"
+        )
+    return "\n".join(lines)

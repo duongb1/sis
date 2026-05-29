@@ -175,7 +175,6 @@ def print_metric_summary(root):
                     "binary_i63": test.get("binary_i63"),
                     "sens": test.get("sensitivity"),
                     "spec": test.get("specificity"),
-                    "cm": test.get("confusion_matrix") or load_confusion_matrix(pred_path),
                 }
             )
     print("\n" + "=" * 80)
@@ -185,8 +184,6 @@ def print_metric_summary(root):
             f"{row['model']}: acc={row['acc']} f1={row['f1']} auc={row['auc']} "
             f"sens={row['sens']} spec={row['spec']}"
         )
-        if row["cm"] is not None:
-            print(f"  multi-class confusion_matrix: {row['cm']}")
         if row["binary_i63"]:
             binary = row["binary_i63"]
             print(

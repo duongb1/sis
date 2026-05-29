@@ -7,7 +7,6 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from sklearn.metrics import confusion_matrix
 from torch.utils.data import DataLoader
 
 from sislib.common import quiet_hf_logging
@@ -17,7 +16,7 @@ quiet_hf_logging()
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
 from sislib.common import get_device, resolve_max_len, round_metrics, seed_all, to_device
-from sislib.metrics import save_preds
+from sislib.metrics import format_metrics_summary, save_preds
 from sislib.text_data import TextDataset, collect_large_text, collect_paired_text, collect_small_text, make_label_maps, save_records
 from sislib.text_train import eval_text
 
@@ -104,8 +103,6 @@ def main():
 
     requested_max_len = args.max_len or checkpoint_max_len(checkpoint) or 512
     max_len = resolve_max_len(model, requested_max_len)
-    if max_len != requested_max_len:
-        print(f"Requested max_len={requested_max_len}, using {max_len}.")
     model = to_device(model, device, not args.no_mgpu)
 
     print(f"Checkpoint: {checkpoint.resolve()}")
@@ -144,8 +141,8 @@ def main():
     save_records(out / "dataset_records.csv", records)
     with open(out / "metrics.json", "w", encoding="utf-8") as f:
         json.dump({"test": rounded}, f, ensure_ascii=False, indent=2)
-    print(f"test: {rounded}")
-    print(confusion_matrix(y, pred, labels=list(range(len(labels))) if labels else None))
+    print(format_metrics_summary("test", rounded))
+    print(f"Saved full metrics to {out / 'metrics.json'}")
 
 
 if __name__ == "__main__":
