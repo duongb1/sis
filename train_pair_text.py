@@ -22,7 +22,7 @@ from sislib.text_train import ce_epoch, eval_text
 
 def parse_args():
     p = argparse.ArgumentParser(description="Train paired text-only PhoBERT on patient text files inside image folders.")
-    p.add_argument("--images", default="/kaggle/input/datasets/duongb/cthsis/images")
+    p.add_argument("--images", default="/kaggle/input/datasets/duongb/cthsis/data/images")
     p.add_argument("--out", default="/kaggle/working/paired_text_only")
     p.add_argument("--model", default="vinai/phobert-base")
     p.add_argument("--max-len", type=int, default=512)

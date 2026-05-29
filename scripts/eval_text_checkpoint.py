@@ -18,16 +18,17 @@ from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
 from sislib.common import get_device, resolve_max_len, round_metrics, seed_all, to_device
 from sislib.metrics import save_preds
-from sislib.text_data import TextDataset, collect_large_text, collect_paired_text, save_records
+from sislib.text_data import TextDataset, collect_large_text, collect_paired_text, collect_small_text, save_records
 from sislib.text_train import eval_text
 
 
 def parse_args():
     p = argparse.ArgumentParser(description="Evaluate a saved text checkpoint on a selected SIS text test split.")
     p.add_argument("--checkpoint", required=True, help="Path to a saved Hugging Face text checkpoint directory.")
-    p.add_argument("--dataset", choices=["large", "paired"], required=True)
-    p.add_argument("--texts", default="/kaggle/input/datasets/duongb/cthsis/texts")
-    p.add_argument("--images", default="/kaggle/input/datasets/duongb/cthsis/images")
+    p.add_argument("--dataset", choices=["large", "small", "paired"], required=True)
+    p.add_argument("--texts", default="/kaggle/input/datasets/duongb/cthsis/data/texts")
+    p.add_argument("--small", default="/kaggle/input/datasets/duongb/cthsis/sis/small")
+    p.add_argument("--images", default="/kaggle/input/datasets/duongb/cthsis/data/images")
     p.add_argument("--out", required=True)
     p.add_argument("--max-len", type=int, default=None)
     p.add_argument("--batch", type=int, default=16)
@@ -42,6 +43,9 @@ def parse_args():
 def load_records(args):
     if args.dataset == "large":
         records, skipped, data_root = collect_large_text(args.texts, splits=("test",))
+        return records, skipped, data_root
+    if args.dataset == "small":
+        records, skipped, data_root = collect_small_text(args.small, splits=("test",))
         return records, skipped, data_root
     records, missing, image_root = collect_paired_text(args.images, splits=("test",))
     return records, missing, image_root

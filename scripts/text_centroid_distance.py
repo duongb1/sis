@@ -25,8 +25,8 @@ from sislib.text_data import TextDataset, collect_large_text, collect_paired_tex
 
 def parse_args():
     p = argparse.ArgumentParser(description="Compute class-wise text embedding centroid distances for large vs paired text.")
-    p.add_argument("--texts", default="/kaggle/input/datasets/duongb/cthsis/texts")
-    p.add_argument("--images", default="/kaggle/input/datasets/duongb/cthsis/images")
+    p.add_argument("--texts", default="/kaggle/input/datasets/duongb/cthsis/data/texts")
+    p.add_argument("--images", default="/kaggle/input/datasets/duongb/cthsis/data/images")
     p.add_argument("--out", default="/kaggle/working/sis_runs/05_text_centroids")
     p.add_argument("--checkpoint", default=None, help="Optional Hugging Face checkpoint directory.")
     p.add_argument("--model", default="vinai/phobert-base", help="Base model used when --checkpoint is missing.")

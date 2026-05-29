@@ -26,8 +26,8 @@ from sislib.text_data import TextDataset, collect_large_text, collect_paired_tex
 
 def parse_args():
     p = argparse.ArgumentParser(description="Plot t-SNE for large text and paired text across train/val/test splits.")
-    p.add_argument("--texts", default="/kaggle/input/datasets/duongb/cthsis/texts")
-    p.add_argument("--images", default="/kaggle/input/datasets/duongb/cthsis/images")
+    p.add_argument("--texts", default="/kaggle/input/datasets/duongb/cthsis/data/texts")
+    p.add_argument("--images", default="/kaggle/input/datasets/duongb/cthsis/data/images")
     p.add_argument("--out", default="/kaggle/working/sis_runs/04_text_tsne")
     p.add_argument("--checkpoint", default=None, help="Optional Hugging Face checkpoint directory to extract embeddings from.")
     p.add_argument("--model", default="vinai/phobert-base", help="Base model used when --checkpoint is not set.")

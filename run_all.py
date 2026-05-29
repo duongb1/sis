@@ -10,28 +10,25 @@ ROOT = Path(__file__).resolve().parent
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Run the full SIS experiment pipeline.")
-    p.add_argument("--images", default="/kaggle/input/datasets/duongb/cthsis/images")
-    p.add_argument("--texts", default="/kaggle/input/datasets/duongb/cthsis/texts")
+    p = argparse.ArgumentParser(description="Train/evaluate large and small SIS text folders, then run cross-tests.")
+    p.add_argument("--large", default="/kaggle/input/datasets/duongb/cthsis/sis/large")
+    p.add_argument("--small", default="/kaggle/input/datasets/duongb/cthsis/sis/small")
     p.add_argument("--output_dir", default="/kaggle/working/sis_runs")
     p.add_argument("--model", default="vinai/phobert-base")
     p.add_argument("--large_text_ckpt", default=None, help="Optional existing large-text checkpoint.")
+    p.add_argument("--small_text_ckpt", default=None, help="Optional existing small-text checkpoint.")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--threshold", type=float, default=0.5)
     p.add_argument("--workers", type=int, default=0)
     p.add_argument("--max_len", type=int, default=512)
     p.add_argument("--batch_text", type=int, default=16)
-    p.add_argument("--batch_mri", type=int, default=64)
-    p.add_argument("--mri_epochs", type=int, default=20)
     p.add_argument("--large_epochs", type=int, default=8)
-    p.add_argument("--paired_epochs", type=int, default=8)
-    p.add_argument("--mri_lr", type=float, default=1e-4)
+    p.add_argument("--small_epochs", type=int, default=8)
     p.add_argument("--text_lr", type=float, default=2e-5)
-    p.add_argument("--wd_mri", type=float, default=1e-4)
     p.add_argument("--wd_text", type=float, default=0.01)
     p.add_argument("--warmup", type=float, default=0.1)
     p.add_argument("--accum", type=int, default=1)
-    p.add_argument("--force", action="store_true", help="Retrain stages even if outputs already exist.")
+    p.add_argument("--force", action="store_true", help="Retrain/re-evaluate stages even if outputs already exist.")
     p.add_argument("--cpu", action="store_true")
     p.add_argument("--no_mgpu", action="store_true")
     p.add_argument("--dry_run", action="store_true")
@@ -53,15 +50,6 @@ def run_stage(name, cmd, done_path, force=False, dry_run=False):
     subprocess.run([str(x) for x in cmd], check=True, cwd=ROOT, env=env)
 
 
-def add_common_flags(cmd, args):
-    cmd.extend(["--seed", args.seed, "--threshold", args.threshold, "--workers", args.workers])
-    if args.cpu:
-        cmd.append("--cpu")
-    if args.no_mgpu:
-        cmd.append("--no-mgpu")
-    return cmd
-
-
 def add_text_train_flags(cmd, args):
     cmd.extend(
         [
@@ -77,9 +65,19 @@ def add_text_train_flags(cmd, args):
             args.max_len,
             "--accum",
             args.accum,
+            "--seed",
+            args.seed,
+            "--threshold",
+            args.threshold,
+            "--workers",
+            args.workers,
         ]
     )
-    return add_common_flags(cmd, args)
+    if args.cpu:
+        cmd.append("--cpu")
+    if args.no_mgpu:
+        cmd.append("--no-mgpu")
+    return cmd
 
 
 def add_text_eval_flags(cmd, args):
@@ -135,11 +133,10 @@ def load_confusion_matrix(path):
 def print_metric_summary(root):
     rows = []
     for name, metrics_path, pred_path in [
-        ("MRI-only teacher", root / "00_mri_teacher" / "metrics.json", root / "00_mri_teacher" / "test_predictions_best_auc.csv"),
-        ("Large-text CE", root / "01_large_text_ce" / "metrics.json", root / "01_large_text_ce" / "test_predictions_best_auc.csv"),
-        ("Paired-only CE", root / "02_paired_text_ce" / "metrics.json", root / "02_paired_text_ce" / "test_predictions_best_auc.csv"),
-        ("Large checkpoint on paired test", root / "03_cross_test" / "large_on_paired_test" / "metrics.json", root / "03_cross_test" / "large_on_paired_test" / "test_predictions.csv"),
-        ("Paired checkpoint on large test", root / "03_cross_test" / "paired_on_large_test" / "metrics.json", root / "03_cross_test" / "paired_on_large_test" / "test_predictions.csv"),
+        ("Large train/test", root / "01_large_text_ce" / "metrics.json", root / "01_large_text_ce" / "test_predictions_best_auc.csv"),
+        ("Small train/test", root / "02_small_text_ce" / "metrics.json", root / "02_small_text_ce" / "test_predictions_best_auc.csv"),
+        ("Large checkpoint on small test", root / "03_cross_test" / "large_on_small_test" / "metrics.json", root / "03_cross_test" / "large_on_small_test" / "test_predictions.csv"),
+        ("Small checkpoint on large test", root / "03_cross_test" / "small_on_large_test" / "metrics.json", root / "03_cross_test" / "small_on_large_test" / "test_predictions.csv"),
     ]:
         metrics = load_json(metrics_path)
         if metrics and "test" in metrics:
@@ -166,111 +163,95 @@ def print_metric_summary(root):
             print(f"  confusion_matrix [[TN, FP], [FN, TP]]: {row['cm']}")
 
 
+def train_text_cmd(args, data, out, epochs):
+    cmd = [
+        sys.executable,
+        "train_text.py",
+        "--data",
+        data,
+        "--out",
+        out,
+        "--model",
+        args.model,
+        "--epochs",
+        epochs,
+    ]
+    return add_text_train_flags(cmd, args)
+
+
 def main():
     args = parse_args()
     root = Path(args.output_dir)
     if not args.dry_run:
         root.mkdir(parents=True, exist_ok=True)
 
-    mri_out = root / "00_mri_teacher"
     large_out = root / "01_large_text_ce"
-    paired_out = root / "02_paired_text_ce"
+    small_out = root / "02_small_text_ce"
     cross_out = root / "03_cross_test"
 
-    mri_ckpt = mri_out / "best_auc_model.pt"
     large_ckpt = Path(args.large_text_ckpt) if args.large_text_ckpt else large_out / "best_auc_phobert"
-    paired_ckpt = paired_out / "best_auc_phobert"
-
-    mri_cmd = [
-        sys.executable,
-        "train_mri.py",
-        "--images",
-        args.images,
-        "--out",
-        mri_out,
-        "--epochs",
-        args.mri_epochs,
-        "--batch",
-        args.batch_mri,
-        "--lr",
-        args.mri_lr,
-        "--wd",
-        args.wd_mri,
-    ]
-    add_common_flags(mri_cmd, args)
-    run_stage("1. MRI-only teacher", mri_cmd, mri_ckpt, args.force, args.dry_run)
+    small_ckpt = Path(args.small_text_ckpt) if args.small_text_ckpt else small_out / "best_auc_phobert"
 
     if args.large_text_ckpt:
         print(f"\nUsing existing large-text checkpoint: {large_ckpt}")
     else:
-        large_cmd = [
-            sys.executable,
-            "train_text.py",
-            "--data",
-            args.texts,
-            "--out",
-            large_out,
-            "--model",
-            args.model,
-            "--epochs",
-            args.large_epochs,
-        ]
-        add_text_train_flags(large_cmd, args)
-        run_stage("2. Large text-only CE", large_cmd, large_ckpt, args.force, args.dry_run)
+        run_stage(
+            "1. Train and evaluate on large",
+            train_text_cmd(args, args.large, large_out, args.large_epochs),
+            large_ckpt,
+            args.force,
+            args.dry_run,
+        )
 
-    paired_cmd = [
-        sys.executable,
-        "train_pair_text.py",
-        "--images",
-        args.images,
-        "--out",
-        paired_out,
-        "--model",
-        args.model,
-        "--epochs",
-        args.paired_epochs,
-    ]
-    add_text_train_flags(paired_cmd, args)
-    run_stage("3. Paired text-only CE", paired_cmd, paired_ckpt, args.force, args.dry_run)
+    if args.small_text_ckpt:
+        print(f"\nUsing existing small-text checkpoint: {small_ckpt}")
+    else:
+        run_stage(
+            "2. Train and evaluate on small",
+            train_text_cmd(args, args.small, small_out, args.small_epochs),
+            small_ckpt,
+            args.force,
+            args.dry_run,
+        )
 
-    large_on_paired_cmd = [
+    large_on_small_cmd = [
         sys.executable,
         "scripts/eval_text_checkpoint.py",
         "--checkpoint",
         large_ckpt,
         "--dataset",
-        "paired",
-        "--images",
-        args.images,
+        "small",
+        "--small",
+        args.small,
         "--out",
-        cross_out / "large_on_paired_test",
+        cross_out / "large_on_small_test",
     ]
-    add_text_eval_flags(large_on_paired_cmd, args)
+    add_text_eval_flags(large_on_small_cmd, args)
     run_stage(
-        "4. Cross-test: large checkpoint on paired test",
-        large_on_paired_cmd,
-        cross_out / "large_on_paired_test" / "metrics.json",
+        "3a. Cross-test: large checkpoint on small test",
+        large_on_small_cmd,
+        cross_out / "large_on_small_test" / "metrics.json",
         args.force,
         args.dry_run,
     )
 
-    paired_on_large_cmd = [
+    small_on_large_cmd = [
         sys.executable,
         "scripts/eval_text_checkpoint.py",
         "--checkpoint",
-        paired_ckpt,
+        small_ckpt,
         "--dataset",
         "large",
         "--texts",
-        args.texts,
+        args.large,
         "--out",
-        cross_out / "paired_on_large_test",
+        cross_out / "small_on_large_test",
     ]
-    add_text_eval_flags(paired_on_large_cmd, args)
+    add_text_eval_flags(small_on_large_cmd, args)
     run_stage(
-        "5. Cross-test: paired checkpoint on large test",
-        paired_on_large_cmd,
-        cross_out / "paired_on_large_test" / "metrics.json",
+        "3b. Cross-test: small checkpoint on large test",
+        small_on_large_cmd,
+        cross_out / "small_on_large_test" / "metrics.json",
         args.force,
         args.dry_run,
     )
