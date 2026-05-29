@@ -18,7 +18,7 @@ from sislib.mri import MRIDataset, collect_pairs, mri_transforms, resnet50_binar
 
 def parse_args():
     p = argparse.ArgumentParser(description="Train MRI-only ResNet50 classifier.")
-    p.add_argument("--images", default="/kaggle/input/datasets/duongbui/siscth")
+    p.add_argument("--images", default="/kaggle/input/datasets/duongb/cthsis/data/images")
     p.add_argument("--out", default="/kaggle/working/mri_classifier")
     p.add_argument("--size", type=int, default=224)
     p.add_argument("--batch", type=int, default=64)

@@ -22,7 +22,7 @@ from sislib.text_train import ce_epoch, eval_text
 
 def parse_args():
     p = argparse.ArgumentParser(description="Train text-only PhoBERT on large text files.")
-    p.add_argument("--data", default="/kaggle/input/datasets/duongb/cthsis/texts")
+    p.add_argument("--data", default="/kaggle/input/datasets/duongb/cthsis/data/texts")
     p.add_argument("--out", default="/kaggle/working/text_phobert_classifier")
     p.add_argument("--model", default="vinai/phobert-base")
     p.add_argument("--max-len", type=int, default=512)

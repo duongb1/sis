@@ -7,6 +7,42 @@ from torch.utils.data import Dataset
 from .common import LABELS, LABEL_TO_ID, SPLITS, read_text
 
 
+def _join_csv_row(row):
+    parts = []
+    for value in row.values():
+        value = (value or "").strip()
+        if value:
+            parts.append(value)
+    return "\n".join(parts).strip()
+
+
+def _collect_split_label_csv(root, splits):
+    records, skipped = [], []
+    for split in splits:
+        for label in LABELS:
+            csv_path = root / split / f"{label}.csv"
+            if not csv_path.exists():
+                continue
+            with open(csv_path, "r", newline="", encoding="utf-8-sig") as f:
+                reader = csv.DictReader(f)
+                for index, row in enumerate(reader, start=1):
+                    text = _join_csv_row(row)
+                    if not text:
+                        skipped.append(f"{csv_path}:{index}")
+                        continue
+                    records.append(
+                        {
+                            "id": f"{split}/{label}/{csv_path.stem}_{index:06d}",
+                            "split": split,
+                            "label": LABEL_TO_ID[label],
+                            "label_name": label,
+                            "text_path": str(csv_path),
+                            "text": text,
+                        }
+                    )
+    return records, skipped
+
+
 def collect_large_text(root, splits=SPLITS):
     root = Path(root)
     records, skipped = [], []
@@ -33,7 +69,17 @@ def collect_large_text(root, splits=SPLITS):
                         "text": text,
                     }
                 )
+    if records:
+        return records, skipped, root
+
+    csv_records, csv_skipped = _collect_split_label_csv(root, splits)
+    records.extend(csv_records)
+    skipped.extend(csv_skipped)
     return records, skipped, root
+
+
+def collect_small_text(root, splits=SPLITS):
+    return collect_large_text(root, splits=splits)
 
 
 def resolve_image_root(root):
