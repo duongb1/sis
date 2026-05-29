@@ -82,6 +82,13 @@ def round_metrics(metrics, digits=3):
     for key, value in metrics.items():
         if isinstance(value, (float, np.floating)):
             out[key] = round_float(value, digits)
+        elif isinstance(value, dict):
+            out[key] = round_metrics(value, digits)
+        elif isinstance(value, list):
+            out[key] = [
+                round_float(item, digits) if isinstance(item, (float, np.floating)) else item
+                for item in value
+            ]
         else:
             out[key] = value
     return out

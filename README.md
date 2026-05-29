@@ -1,19 +1,17 @@
 # SIS Training Pipeline
 
-Code for large text-only and small text-only training, plus direct cross-test evaluation between the two text checkpoints.
+Code for multi-class large text-only and small text-only training, plus direct cross-test evaluation between the two text checkpoints.
 
 ## Train Large And Small Text Folders
 
 For the Kaggle `sis` input folder that contains:
 
 ```text
-/kaggle/input/datasets/duongb/cthsis/sis/large/train/co.csv
-/kaggle/input/datasets/duongb/cthsis/sis/large/train/khong.csv
-/kaggle/input/datasets/duongb/cthsis/sis/large/val/co.csv
-/kaggle/input/datasets/duongb/cthsis/sis/large/val/khong.csv
-/kaggle/input/datasets/duongb/cthsis/sis/large/test/co.csv
-/kaggle/input/datasets/duongb/cthsis/sis/large/test/khong.csv
-/kaggle/input/datasets/duongb/cthsis/sis/small/train/co.csv
+/kaggle/input/datasets/duongb/cthsis/sis/large/train/I63_INFARCTION.csv
+/kaggle/input/datasets/duongb/cthsis/sis/large/train/G45_TIA.csv
+/kaggle/input/datasets/duongb/cthsis/sis/large/val/I63_INFARCTION.csv
+/kaggle/input/datasets/duongb/cthsis/sis/large/test/I63_INFARCTION.csv
+/kaggle/input/datasets/duongb/cthsis/sis/small/train/I63_INFARCTION.csv
 ...
 ```
 
@@ -30,7 +28,16 @@ This trains:
 /kaggle/working/sis_runs_text_dirs/02_small_text_ce/best_auc_phobert
 ```
 
-Each CSV row is treated as one text sample. All non-empty columns in that row are joined into the input text.
+Each CSV row is treated as one text sample. The class label is the CSV filename without `.csv`. All non-empty columns in that row are joined into the input text. `run_all.py` uses the union of labels from `large` and `small`, so cross-test checkpoints share the same class index mapping.
+
+Metrics are reported in two ways:
+
+```text
+multi-class: all CSV filename classes
+binary_i63: I63_INFARCTION = 1, every other class = 0
+```
+
+The binary metrics include a 2x2 confusion matrix in `metrics.json` under `binary_i63`.
 
 ## Full Pipeline Entrypoint
 

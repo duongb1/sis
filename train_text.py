@@ -16,7 +16,7 @@ from transformers import AutoModelForSequenceClassification, AutoTokenizer, get_
 
 from sislib.common import get_device, resolve_max_len, round_float, round_metrics, seed_all, split_records, to_device, unwrap
 from sislib.metrics import save_preds
-from sislib.text_data import TextDataset, collect_large_text, save_records
+from sislib.text_data import TextDataset, collect_large_text, discover_text_labels, make_label_maps, parse_labels_arg, save_records
 from sislib.text_train import ce_epoch, eval_text
 
 
@@ -25,6 +25,8 @@ def parse_args():
     p.add_argument("--data", default="/kaggle/input/datasets/duongb/cthsis/data/texts")
     p.add_argument("--out", default="/kaggle/working/text_phobert_classifier")
     p.add_argument("--model", default="vinai/phobert-base")
+    p.add_argument("--labels", default=None, help="Comma-separated class names. Defaults to CSV/file labels discovered under --data.")
+    p.add_argument("--binary-positive-label", default="I63_INFARCTION", help="Class treated as positive for one-vs-rest binary metrics.")
     p.add_argument("--max-len", type=int, default=512)
     p.add_argument("--batch", type=int, default=16)
     p.add_argument("--epochs", type=int, default=8)
@@ -40,7 +42,7 @@ def parse_args():
     return p.parse_args()
 
 
-def save_model(model, tokenizer, path, epoch, metrics, args, max_len):
+def save_model(model, tokenizer, path, epoch, metrics, args, max_len, labels, label_to_id):
     path.mkdir(parents=True, exist_ok=True)
     unwrap(model).save_pretrained(path)
     tokenizer.save_pretrained(path)
@@ -52,6 +54,11 @@ def save_model(model, tokenizer, path, epoch, metrics, args, max_len):
                 "val_metrics": round_metrics(metrics),
                 "text_model_name": args.model,
                 "max_length": max_len,
+                "num_labels": len(labels),
+                "labels": labels,
+                "label_to_id": label_to_id,
+                "id_to_label": {str(index): label for index, label in enumerate(labels)},
+                "binary_positive_label": args.binary_positive_label,
             },
             f,
             ensure_ascii=False,
@@ -65,7 +72,12 @@ def main():
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
 
-    records, skipped, data_root = collect_large_text(args.data)
+    labels = parse_labels_arg(args.labels) or discover_text_labels(args.data)
+    if len(labels) < 2:
+        raise RuntimeError(f"Need at least two labels under --data, found: {labels}")
+    label_to_id, id_to_label = make_label_maps(labels)
+
+    records, skipped, data_root = collect_large_text(args.data, labels=labels, label_to_id=label_to_id)
     if skipped:
         (out / "skipped_text_files.txt").write_text("\n".join(skipped), encoding="utf-8")
     train_rows, val_rows, test_rows = [split_records(records, s) for s in ("train", "val", "test")]
@@ -75,7 +87,11 @@ def main():
     device = get_device(args.cpu)
     tokenizer = AutoTokenizer.from_pretrained(args.model, use_fast=False)
     model = AutoModelForSequenceClassification.from_pretrained(
-        args.model, num_labels=2, id2label={0: "khong", 1: "co"}, label2id={"khong": 0, "co": 1}
+        args.model,
+        num_labels=len(labels),
+        id2label=id_to_label,
+        label2id=label_to_id,
+        ignore_mismatched_sizes=True,
     )
     max_len = resolve_max_len(model, args.max_len)
     if max_len != args.max_len:
@@ -83,6 +99,7 @@ def main():
     model = to_device(model, device, not args.no_mgpu)
 
     print(f"Data root: {data_root.resolve()}")
+    print(f"Labels ({len(labels)}): {', '.join(labels)}")
     print(f"Text samples: {len(records)} | Train: {len(train_rows)} | Val: {len(val_rows)} | Test: {len(test_rows)}")
 
     train_loader = DataLoader(TextDataset(train_rows, tokenizer, max_len), batch_size=args.batch, shuffle=True, num_workers=args.workers, pin_memory=device.type == "cuda")
@@ -97,24 +114,45 @@ def main():
     best, best_dir, history = -1.0, out / "best_auc_phobert", []
     for epoch in range(1, args.epochs + 1):
         train_loss = ce_epoch(model, train_loader, opt, sched, scaler, device, args.accum)
-        val_metrics, val_ids, val_y, val_p, val_pred = eval_text(model, val_loader, device, args.threshold)
+        val_metrics, val_ids, val_y, val_p, val_pred = eval_text(
+            model,
+            val_loader,
+            device,
+            args.threshold,
+            label_names=labels,
+            binary_positive_label=args.binary_positive_label,
+        )
+        val_score = val_metrics["auc"]
+        if np.isnan(val_score):
+            val_score = val_metrics["f1_macro"]
         history.append({
             "epoch": epoch,
             "train_loss": round_float(train_loss),
             "val_loss": round_float(val_metrics["loss"]),
             "val_acc": round_float(val_metrics["accuracy"]),
-            "val_f1": round_float(val_metrics["f1"]),
+            "val_f1_macro": round_float(val_metrics["f1_macro"]),
+            "val_f1_weighted": round_float(val_metrics["f1_weighted"]),
             "val_auc": round_float(val_metrics["auc"]),
+            "val_score": round_float(val_score),
         })
         print(
             f"Epoch {epoch:03d}/{args.epochs} | train_loss={train_loss:.3f} | "
             f"val_loss={val_metrics['loss']:.3f} | val_acc={val_metrics['accuracy']:.3f} | "
-            f"val_f1={val_metrics['f1']:.3f} | val_auc={val_metrics['auc']:.3f}"
+            f"val_f1_macro={val_metrics['f1_macro']:.3f} | val_auc={val_metrics['auc']:.3f}"
         )
-        if val_metrics["auc"] > best:
-            best = val_metrics["auc"]
-            save_model(model, tokenizer, best_dir, epoch, val_metrics, args, max_len)
-            save_preds(out / "val_predictions_best_auc.csv", val_ids, val_y, val_p, val_pred, "id")
+        if val_score > best:
+            best = val_score
+            save_model(model, tokenizer, best_dir, epoch, val_metrics, args, max_len, labels, label_to_id)
+            save_preds(
+                out / "val_predictions_best_auc.csv",
+                val_ids,
+                val_y,
+                val_p,
+                val_pred,
+                "id",
+                label_names=labels,
+                binary_positive_label=args.binary_positive_label,
+            )
 
     with open(out / "training_history.csv", "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=list(history[0].keys()))
@@ -127,11 +165,27 @@ def main():
     for split, loader in [("val", val_loader), ("test", test_loader)]:
         if loader is None:
             continue
-        metrics, ids, y, p, pred = eval_text(eval_model, loader, device, args.threshold)
+        metrics, ids, y, p, pred = eval_text(
+            eval_model,
+            loader,
+            device,
+            args.threshold,
+            label_names=labels,
+            binary_positive_label=args.binary_positive_label,
+        )
         all_metrics[split] = round_metrics(metrics)
-        save_preds(out / f"{split}_predictions_best_auc.csv", ids, y, p, pred, "id")
+        save_preds(
+            out / f"{split}_predictions_best_auc.csv",
+            ids,
+            y,
+            p,
+            pred,
+            "id",
+            label_names=labels,
+            binary_positive_label=args.binary_positive_label,
+        )
         print(f"{split}: {round_metrics(metrics)}")
-        print(confusion_matrix(y, pred, labels=[0, 1]))
+        print(confusion_matrix(y, pred, labels=list(range(len(labels)))))
     with open(out / "metrics.json", "w", encoding="utf-8") as f:
         json.dump(all_metrics, f, ensure_ascii=False, indent=2)
 

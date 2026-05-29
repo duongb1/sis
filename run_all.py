@@ -15,6 +15,8 @@ def parse_args():
     p.add_argument("--small", default="/kaggle/input/datasets/duongb/cthsis/sis/small")
     p.add_argument("--output_dir", default="/kaggle/working/sis_runs")
     p.add_argument("--model", default="vinai/phobert-base")
+    p.add_argument("--labels", default=None, help="Comma-separated class names. Defaults to union of labels in --large and --small.")
+    p.add_argument("--binary-positive-label", default="I63_INFARCTION", help="Class treated as positive for one-vs-rest binary metrics.")
     p.add_argument("--large_text_ckpt", default=None, help="Optional existing large-text checkpoint.")
     p.add_argument("--small_text_ckpt", default=None, help="Optional existing small-text checkpoint.")
     p.add_argument("--seed", type=int, default=42)
@@ -71,6 +73,8 @@ def add_text_train_flags(cmd, args):
             args.threshold,
             "--workers",
             args.workers,
+            "--binary-positive-label",
+            args.binary_positive_label,
         ]
     )
     if args.cpu:
@@ -78,6 +82,25 @@ def add_text_train_flags(cmd, args):
     if args.no_mgpu:
         cmd.append("--no-mgpu")
     return cmd
+
+
+def parse_labels_arg(value):
+    if value is None:
+        return None
+    labels = [item.strip() for item in str(value).split(",") if item.strip()]
+    return labels or None
+
+
+def discover_csv_labels(*roots):
+    labels = set()
+    for root in roots:
+        root = Path(root)
+        for split in ("train", "val", "test"):
+            split_dir = root / split
+            if split_dir.exists():
+                labels.update(path.stem for path in split_dir.glob("*.csv") if not path.name.startswith("._"))
+                labels.update(path.name for path in split_dir.iterdir() if path.is_dir())
+    return sorted(labels)
 
 
 def add_text_eval_flags(cmd, args):
@@ -93,6 +116,8 @@ def add_text_eval_flags(cmd, args):
             args.threshold,
             "--workers",
             args.workers,
+            "--binary-positive-label",
+            args.binary_positive_label,
         ]
     )
     if args.cpu:
@@ -145,8 +170,9 @@ def print_metric_summary(root):
                 {
                     "model": name,
                     "acc": test.get("accuracy"),
-                    "f1": test.get("f1"),
+                    "f1": test.get("f1_macro", test.get("f1")),
                     "auc": test.get("auc"),
+                    "binary_i63": test.get("binary_i63"),
                     "sens": test.get("sensitivity"),
                     "spec": test.get("specificity"),
                     "cm": test.get("confusion_matrix") or load_confusion_matrix(pred_path),
@@ -160,10 +186,17 @@ def print_metric_summary(root):
             f"sens={row['sens']} spec={row['spec']}"
         )
         if row["cm"] is not None:
-            print(f"  confusion_matrix [[TN, FP], [FN, TP]]: {row['cm']}")
+            print(f"  multi-class confusion_matrix: {row['cm']}")
+        if row["binary_i63"]:
+            binary = row["binary_i63"]
+            print(
+                f"  binary_i63: acc={binary.get('accuracy')} f1={binary.get('f1')} auc={binary.get('auc')} "
+                f"sens={binary.get('sensitivity')} spec={binary.get('specificity')}"
+            )
+            print(f"  binary_i63 confusion_matrix [[TN, FP], [FN, TP]]: {binary.get('confusion_matrix')}")
 
 
-def train_text_cmd(args, data, out, epochs):
+def train_text_cmd(args, data, out, epochs, labels):
     cmd = [
         sys.executable,
         "train_text.py",
@@ -175,6 +208,8 @@ def train_text_cmd(args, data, out, epochs):
         args.model,
         "--epochs",
         epochs,
+        "--labels",
+        ",".join(labels),
     ]
     return add_text_train_flags(cmd, args)
 
@@ -191,13 +226,17 @@ def main():
 
     large_ckpt = Path(args.large_text_ckpt) if args.large_text_ckpt else large_out / "best_auc_phobert"
     small_ckpt = Path(args.small_text_ckpt) if args.small_text_ckpt else small_out / "best_auc_phobert"
+    labels = parse_labels_arg(args.labels) or discover_csv_labels(args.large, args.small)
+    if len(labels) < 2:
+        raise RuntimeError(f"Need at least two labels across --large/--small, found: {labels}")
+    print(f"Labels ({len(labels)}): {', '.join(labels)}")
 
     if args.large_text_ckpt:
         print(f"\nUsing existing large-text checkpoint: {large_ckpt}")
     else:
         run_stage(
             "1. Train and evaluate on large",
-            train_text_cmd(args, args.large, large_out, args.large_epochs),
+            train_text_cmd(args, args.large, large_out, args.large_epochs, labels),
             large_ckpt,
             args.force,
             args.dry_run,
@@ -208,7 +247,7 @@ def main():
     else:
         run_stage(
             "2. Train and evaluate on small",
-            train_text_cmd(args, args.small, small_out, args.small_epochs),
+            train_text_cmd(args, args.small, small_out, args.small_epochs, labels),
             small_ckpt,
             args.force,
             args.dry_run,
