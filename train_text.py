@@ -5,7 +5,6 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from sklearn.metrics import confusion_matrix
 from torch.utils.data import DataLoader
 
 from sislib.common import quiet_hf_logging
@@ -15,7 +14,7 @@ quiet_hf_logging()
 from transformers import AutoModelForSequenceClassification, AutoTokenizer, get_linear_schedule_with_warmup
 
 from sislib.common import get_device, resolve_max_len, round_float, round_metrics, seed_all, split_records, to_device, unwrap
-from sislib.metrics import save_preds
+from sislib.metrics import format_metrics_summary, save_preds
 from sislib.text_data import TextDataset, collect_large_text, discover_text_labels, make_label_maps, parse_labels_arg, save_records
 from sislib.text_train import ce_epoch, eval_text
 
@@ -94,8 +93,6 @@ def main():
         ignore_mismatched_sizes=True,
     )
     max_len = resolve_max_len(model, args.max_len)
-    if max_len != args.max_len:
-        print(f"Requested max_len={args.max_len}, using {max_len}.")
     model = to_device(model, device, not args.no_mgpu)
 
     print(f"Data root: {data_root.resolve()}")
@@ -184,10 +181,10 @@ def main():
             label_names=labels,
             binary_positive_label=args.binary_positive_label,
         )
-        print(f"{split}: {round_metrics(metrics)}")
-        print(confusion_matrix(y, pred, labels=list(range(len(labels)))))
+        print(format_metrics_summary(split, all_metrics[split]))
     with open(out / "metrics.json", "w", encoding="utf-8") as f:
         json.dump(all_metrics, f, ensure_ascii=False, indent=2)
+    print(f"Saved full metrics to {out / 'metrics.json'}")
 
 
 if __name__ == "__main__":

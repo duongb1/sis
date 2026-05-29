@@ -1,9 +1,12 @@
 import random
 import os
+import logging
+import warnings
 from pathlib import Path
 
 import numpy as np
 import torch
+import torch.nn as nn
 
 
 LABEL_TO_ID = {"khong": 0, "co": 1}
@@ -15,6 +18,17 @@ LABELS = ["co", "khong"]
 def quiet_hf_logging():
     os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
     os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
+    logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
+    warnings.filterwarnings(
+        "ignore",
+        message="Was asked to gather along dimension 0, but all input tensors were scalars.*",
+        category=UserWarning,
+    )
+    warnings.filterwarnings(
+        "ignore",
+        message=".*You are sending unauthenticated requests to the HF Hub.*",
+        category=UserWarning,
+    )
     try:
         from transformers.utils import logging as hf_logging
 
@@ -98,7 +112,33 @@ def resolve_max_len(model, requested):
     max_positions = getattr(model.config, "max_position_embeddings", None)
     if max_positions is None:
         return requested
-    return min(requested, max_positions - 2)
+
+    base_model = getattr(model, getattr(model, "base_model_prefix", ""), None)
+    embeddings = getattr(base_model, "embeddings", None) if base_model is not None else None
+    position_embeddings = getattr(embeddings, "position_embeddings", None)
+    if position_embeddings is None:
+        return requested
+
+    padding_idx = position_embeddings.padding_idx or 0
+    required_positions = requested + padding_idx + 1
+    if max_positions >= required_positions and position_embeddings.num_embeddings >= required_positions:
+        return requested
+
+    old_weight = position_embeddings.weight.data
+    new_embeddings = nn.Embedding(required_positions, old_weight.shape[1], padding_idx=position_embeddings.padding_idx)
+    new_embeddings.to(old_weight.device, dtype=old_weight.dtype)
+    rows_to_copy = min(old_weight.shape[0], required_positions)
+    new_embeddings.weight.data[:rows_to_copy] = old_weight[:rows_to_copy]
+    if required_positions > rows_to_copy:
+        new_embeddings.weight.data[rows_to_copy:] = old_weight[-1].unsqueeze(0).repeat(required_positions - rows_to_copy, 1)
+    embeddings.position_embeddings = new_embeddings
+    embeddings.register_buffer("position_ids", torch.arange(required_positions).expand((1, -1)), persistent=False)
+    if hasattr(embeddings, "token_type_ids"):
+        embeddings.register_buffer("token_type_ids", torch.zeros((1, required_positions), dtype=torch.long), persistent=False)
+    model.config.max_position_embeddings = required_positions
+    if hasattr(base_model, "config"):
+        base_model.config.max_position_embeddings = required_positions
+    return requested
 
 
 def split_records(records, split):
