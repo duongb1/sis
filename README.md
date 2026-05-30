@@ -2,6 +2,70 @@
 
 Code for multi-class large text-only and small text-only training, plus direct cross-test evaluation between the two text checkpoints.
 
+## Train From Excel Files
+
+The training script can read `.xlsx` files directly. For the current files:
+
+```text
+700_co_label.xlsx
+700_khong_label.xlsx
+9937_co_label.xlsx
+9937_khong_label.xlsx
+```
+
+Each row is one sample. Text input is built only from:
+
+```text
+LYDO, HB_BENHLY, HB_BANTHAN, HB_GIADINH, KB_TOANTHAN, KB_BOPHAN
+```
+
+`STT` is ignored. `LABEL` is not included in the input text.
+
+Multi-class training uses `LABEL` as the target:
+
+```bash
+python train_text.py \
+  --data . \
+  --format excel \
+  --excel-task multiclass \
+  --out /kaggle/working/text_excel_multiclass
+```
+
+Binary training uses `co`/`khong` inferred from each Excel filename:
+
+```bash
+python train_text.py \
+  --data . \
+  --format excel \
+  --excel-task binary \
+  --out /kaggle/working/text_excel_binary
+```
+
+Excel input is split into train/val/test with stratified ratios controlled by `--val-ratio` and `--test-ratio` (both default to `0.1`).
+
+## Excel 5-Fold Protocol
+
+Run all four requested experiments with 5 folds, where each fold uses 70% train, 10% validation, and 20% test:
+
+```bash
+python run_excel_5fold.py
+```
+
+This runs:
+
+```text
+large_binary       9937_co_label.xlsx + 9937_khong_label.xlsx, target from filename co/khong
+small_binary       700_co_label.xlsx + 700_khong_label.xlsx, target from filename co/khong
+large_multiclass   9937_co_label.xlsx + 9937_khong_label.xlsx, target from LABEL
+small_multiclass   700_co_label.xlsx + 700_khong_label.xlsx, target from LABEL
+```
+
+Outputs are written to `/kaggle/working/sis_excel_5fold/<experiment>/fold_<0-4>/` by default. To check commands without training:
+
+```bash
+python run_excel_5fold.py --dry-run
+```
+
 ## Train Large And Small Text Folders
 
 For the Kaggle `sis` input folder that contains:

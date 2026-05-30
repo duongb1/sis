@@ -15,7 +15,17 @@ from transformers import AutoModelForSequenceClassification, AutoTokenizer, get_
 
 from sislib.common import get_device, resolve_max_len, round_float, round_metrics, seed_all, split_records, to_device, unwrap
 from sislib.metrics import format_metrics_summary, save_preds
-from sislib.text_data import TextDataset, collect_large_text, discover_text_labels, make_label_maps, parse_labels_arg, save_records
+from sislib.text_data import (
+    TextDataset,
+    collect_excel_text,
+    collect_large_text,
+    discover_excel_labels,
+    discover_text_labels,
+    is_excel_data,
+    make_label_maps,
+    parse_labels_arg,
+    save_records,
+)
 from sislib.text_train import ce_epoch, eval_text
 
 
@@ -24,8 +34,15 @@ def parse_args():
     p.add_argument("--data", default="/kaggle/input/datasets/duongb/cthsis/data/texts")
     p.add_argument("--out", default="/kaggle/working/text_phobert_classifier")
     p.add_argument("--model", default="vinai/phobert-base")
+    p.add_argument("--format", choices=["auto", "text", "excel"], default="auto", help="Input format. Excel accepts one .xlsx file, comma-separated .xlsx files, or a folder of .xlsx files.")
+    p.add_argument("--excel-task", choices=["multiclass", "binary"], default="multiclass", help="For Excel input, train on LABEL multi-class targets or co/khong targets inferred from filenames.")
+    p.add_argument("--val-ratio", type=float, default=0.1, help="Validation ratio for unsplit Excel input.")
+    p.add_argument("--test-ratio", type=float, default=0.1, help="Test ratio for unsplit Excel input.")
+    p.add_argument("--split-strategy", choices=["random", "kfold"], default="random", help="Excel split strategy. kfold uses one fold as 20% test when --n-folds 5.")
+    p.add_argument("--n-folds", type=int, default=5, help="Number of folds for --split-strategy kfold.")
+    p.add_argument("--fold-index", type=int, default=0, help="Zero-based held-out test fold for --split-strategy kfold.")
     p.add_argument("--labels", default=None, help="Comma-separated class names. Defaults to CSV/file labels discovered under --data.")
-    p.add_argument("--binary-positive-label", default="I63_INFARCTION", help="Class treated as positive for one-vs-rest binary metrics.")
+    p.add_argument("--binary-positive-label", default=None, help="Class treated as positive for one-vs-rest binary metrics. Defaults to I63_INFARCTION, or co for --excel-task binary.")
     p.add_argument("--max-len", type=int, default=512)
     p.add_argument("--batch", type=int, default=16)
     p.add_argument("--epochs", type=int, default=8)
@@ -58,6 +75,11 @@ def save_model(model, tokenizer, path, epoch, metrics, args, max_len, labels, la
                 "label_to_id": label_to_id,
                 "id_to_label": {str(index): label for index, label in enumerate(labels)},
                 "binary_positive_label": args.binary_positive_label,
+                "split_strategy": args.split_strategy,
+                "n_folds": args.n_folds,
+                "fold_index": args.fold_index,
+                "val_ratio": args.val_ratio,
+                "test_ratio": args.test_ratio,
             },
             f,
             ensure_ascii=False,
@@ -71,12 +93,34 @@ def main():
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
 
-    labels = parse_labels_arg(args.labels) or discover_text_labels(args.data)
+    use_excel = args.format == "excel" or (args.format == "auto" and is_excel_data(args.data))
+    if use_excel:
+        labels = parse_labels_arg(args.labels) or discover_excel_labels(args.data, task=args.excel_task)
+        if args.binary_positive_label is None:
+            args.binary_positive_label = "co" if args.excel_task == "binary" else "I63_INFARCTION"
+    else:
+        labels = parse_labels_arg(args.labels) or discover_text_labels(args.data)
+        if args.binary_positive_label is None:
+            args.binary_positive_label = "I63_INFARCTION"
     if len(labels) < 2:
         raise RuntimeError(f"Need at least two labels under --data, found: {labels}")
     label_to_id, id_to_label = make_label_maps(labels)
 
-    records, skipped, data_root = collect_large_text(args.data, labels=labels, label_to_id=label_to_id)
+    if use_excel:
+        records, skipped, data_root = collect_excel_text(
+            args.data,
+            labels=labels,
+            label_to_id=label_to_id,
+            task=args.excel_task,
+            seed=args.seed,
+            val_ratio=args.val_ratio,
+            test_ratio=args.test_ratio,
+            split_strategy=args.split_strategy,
+            n_folds=args.n_folds,
+            fold_index=args.fold_index,
+        )
+    else:
+        records, skipped, data_root = collect_large_text(args.data, labels=labels, label_to_id=label_to_id)
     if skipped:
         (out / "skipped_text_files.txt").write_text("\n".join(skipped), encoding="utf-8")
     train_rows, val_rows, test_rows = [split_records(records, s) for s in ("train", "val", "test")]
