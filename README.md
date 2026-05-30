@@ -25,7 +25,7 @@ Multi-class training uses `LABEL` as the target:
 
 ```bash
 python train_text.py \
-  --data . \
+  --data /kaggle/input/datasets/duongb/cthsis \
   --format excel \
   --excel-task multiclass \
   --out /kaggle/working/text_excel_multiclass
@@ -35,7 +35,7 @@ Binary training uses `co`/`khong` inferred from each Excel filename:
 
 ```bash
 python train_text.py \
-  --data . \
+  --data /kaggle/input/datasets/duongb/cthsis \
   --format excel \
   --excel-task binary \
   --out /kaggle/working/text_excel_binary
@@ -54,10 +54,10 @@ python run_excel_5fold.py
 This runs:
 
 ```text
-large_binary       9937_co_label.xlsx + 9937_khong_label.xlsx, target from filename co/khong
-small_binary       700_co_label.xlsx + 700_khong_label.xlsx, target from filename co/khong
-large_multiclass   9937_co_label.xlsx + 9937_khong_label.xlsx, target from LABEL
-small_multiclass   700_co_label.xlsx + 700_khong_label.xlsx, target from LABEL
+large_binary       /kaggle/input/datasets/duongb/cthsis/9937_co_label.xlsx + /kaggle/input/datasets/duongb/cthsis/9937_khong_label.xlsx, target from filename co/khong
+small_binary       /kaggle/input/datasets/duongb/cthsis/700_co_label.xlsx + /kaggle/input/datasets/duongb/cthsis/700_khong_label.xlsx, target from filename co/khong
+large_multiclass   /kaggle/input/datasets/duongb/cthsis/9937_co_label.xlsx + /kaggle/input/datasets/duongb/cthsis/9937_khong_label.xlsx, target from LABEL
+small_multiclass   /kaggle/input/datasets/duongb/cthsis/700_co_label.xlsx + /kaggle/input/datasets/duongb/cthsis/700_khong_label.xlsx, target from LABEL
 ```
 
 Outputs are written to `/kaggle/working/sis_excel_5fold/<experiment>/fold_<0-4>/` by default. To check commands without training:
