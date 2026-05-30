@@ -6,6 +6,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent
+DEFAULT_EXCEL_ROOT = "/kaggle/input/datasets/duongb/cthsis"
 
 
 EXPERIMENTS = [
@@ -38,6 +39,7 @@ EXPERIMENTS = [
 
 def parse_args():
     p = argparse.ArgumentParser(description="Run Excel SIS text training for large/small binary and multi-class with 5-fold 70/10/20 splits.")
+    p.add_argument("--excel-root", default=DEFAULT_EXCEL_ROOT, help="Folder containing the four Excel files.")
     p.add_argument("--output-dir", default="/kaggle/working/sis_excel_5fold")
     p.add_argument("--model", default="vinai/phobert-base")
     p.add_argument("--epochs", type=int, default=8)
@@ -87,11 +89,13 @@ def run_stage(name, cmd, done_path, force=False, dry_run=False):
 
 
 def train_cmd(args, experiment, fold, out):
+    excel_root = args.excel_root.rstrip("/\\")
+    data = ",".join(f"{excel_root}/{name}" for name in experiment["data"].split(","))
     cmd = [
         sys.executable,
         "train_text.py",
         "--data",
-        experiment["data"],
+        data,
         "--out",
         out,
         "--model",
@@ -151,11 +155,11 @@ def main():
 
     for experiment in selected_experiments(args.only):
         for fold in range(args.folds):
-            out = output_dir / experiment["name"] / f"fold_{fold}"
+            out = f"{args.output_dir.rstrip('/\\')}/{experiment['name']}/fold_{fold}"
             run_stage(
                 f"{experiment['name']} fold {fold}: train=70%, val=10%, test=20%",
                 train_cmd(args, experiment, fold, out),
-                out / "metrics.json",
+                Path(out) / "metrics.json",
                 force=args.force,
                 dry_run=args.dry_run,
             )
