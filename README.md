@@ -79,6 +79,14 @@ After all 5 folds finish for an experiment, the runner prints mean ± std and sa
 /kaggle/working/sis_excel_5fold/<experiment>/summary_5fold.csv
 ```
 
+The runner also evaluates a score-level ensemble for the small models after both `small_binary` and `small_multiclass` finish. It tunes `beta` and threshold on each fold's validation set, applies the selected pair once on that fold's test set, then prints/saves 5-fold mean ± std under:
+
+```text
+/kaggle/working/sis_excel_5fold/small_ensemble/
+```
+
+For valid ensembling, the runner forces both small models to use the same fold membership by stratifying fold assignment with the filename-derived binary label.
+
 ## Train Large And Small Text Folders
 
 For the Kaggle `sis` input folder that contains:

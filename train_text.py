@@ -41,6 +41,7 @@ def parse_args():
     p.add_argument("--split-strategy", choices=["random", "kfold"], default="random", help="Excel split strategy. kfold uses one fold as 20% test when --n-folds 5.")
     p.add_argument("--n-folds", type=int, default=5, help="Number of folds for --split-strategy kfold.")
     p.add_argument("--fold-index", type=int, default=0, help="Zero-based held-out test fold for --split-strategy kfold.")
+    p.add_argument("--excel-split-label", choices=["target", "binary", "multiclass"], default="target", help="Label source used only to stratify Excel kfold splits.")
     p.add_argument("--labels", default=None, help="Comma-separated class names. Defaults to CSV/file labels discovered under --data.")
     p.add_argument("--binary-positive-label", default=None, help="Class treated as positive for one-vs-rest binary metrics. Defaults to I63_INFARCTION, or co for --excel-task binary.")
     p.add_argument("--max-len", type=int, default=512)
@@ -86,6 +87,7 @@ def save_model(model, tokenizer, path, epoch, metrics, args, max_len, labels, la
                 "split_strategy": args.split_strategy,
                 "n_folds": args.n_folds,
                 "fold_index": args.fold_index,
+                "excel_split_label": args.excel_split_label,
                 "val_ratio": args.val_ratio,
                 "test_ratio": args.test_ratio,
             },
@@ -126,6 +128,7 @@ def main():
             split_strategy=args.split_strategy,
             n_folds=args.n_folds,
             fold_index=args.fold_index,
+            split_label=args.excel_split_label,
         )
     else:
         records, skipped, data_root = collect_large_text(args.data, labels=labels, label_to_id=label_to_id)
