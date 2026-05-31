@@ -14,7 +14,7 @@ quiet_hf_logging()
 from transformers import AutoModelForSequenceClassification, AutoTokenizer, get_linear_schedule_with_warmup
 
 from sislib.common import get_device, resolve_max_len, round_float, round_metrics, seed_all, split_records, to_device, unwrap
-from sislib.metrics import format_metrics_summary, save_preds
+from sislib.metrics import cls_metrics, format_metrics_summary, save_preds
 from sislib.text_data import (
     TextDataset,
     collect_excel_text,
@@ -50,12 +50,20 @@ def parse_args():
     p.add_argument("--wd", type=float, default=0.01)
     p.add_argument("--warmup", type=float, default=0.1)
     p.add_argument("--threshold", type=float, default=0.5)
+    p.add_argument("--thresholds", default=None, help="Comma-separated thresholds for binary_positive_label metrics, e.g. 0.30,0.35,0.40,0.45,0.50.")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--workers", type=int, default=0)
     p.add_argument("--accum", type=int, default=1)
     p.add_argument("--cpu", action="store_true")
     p.add_argument("--no-mgpu", action="store_true")
     return p.parse_args()
+
+
+def parse_thresholds(value, default):
+    if value is None:
+        return [default]
+    thresholds = [float(item.strip()) for item in str(value).split(",") if item.strip()]
+    return thresholds or [default]
 
 
 def save_model(model, tokenizer, path, epoch, metrics, args, max_len, labels, label_to_id):
@@ -193,6 +201,7 @@ def main():
                 "id",
                 label_names=labels,
                 binary_positive_label=args.binary_positive_label,
+                threshold=args.threshold,
             )
 
     with open(out / "training_history.csv", "w", newline="", encoding="utf-8") as f:
@@ -202,7 +211,7 @@ def main():
     save_records(out / "dataset_records.csv", records)
 
     eval_model = to_device(AutoModelForSequenceClassification.from_pretrained(best_dir), device, not args.no_mgpu)
-    all_metrics = {}
+    all_metrics, threshold_sweeps = {}, {}
     for split, loader in [("val", val_loader), ("test", test_loader)]:
         if loader is None:
             continue
@@ -215,6 +224,17 @@ def main():
             binary_positive_label=args.binary_positive_label,
         )
         all_metrics[split] = round_metrics(metrics)
+        threshold_sweeps[split] = {}
+        for threshold in parse_thresholds(args.thresholds, args.threshold):
+            sweep_metrics = cls_metrics(
+                y,
+                p,
+                pred,
+                threshold=threshold,
+                label_names=labels,
+                binary_positive_label=args.binary_positive_label,
+            )
+            threshold_sweeps[split][str(threshold)] = round_metrics(sweep_metrics.get("binary_i63", sweep_metrics))
         save_preds(
             out / f"{split}_predictions_best_auc.csv",
             ids,
@@ -224,10 +244,11 @@ def main():
             "id",
             label_names=labels,
             binary_positive_label=args.binary_positive_label,
+            threshold=args.threshold,
         )
         print(format_metrics_summary(split, all_metrics[split]))
     with open(out / "metrics.json", "w", encoding="utf-8") as f:
-        json.dump(all_metrics, f, ensure_ascii=False, indent=2)
+        json.dump({**all_metrics, "binary_threshold_sweep": threshold_sweeps}, f, ensure_ascii=False, indent=2)
     print(f"Saved full metrics to {out / 'metrics.json'}")
 
 

@@ -16,17 +16,19 @@ def _safe_auc(labels, probs, num_classes):
         return float("nan")
 
 
-def _binary_one_vs_rest_metrics(labels, probs, preds, positive_index, positive_label):
+def _binary_one_vs_rest_metrics(labels, probs, positive_index, positive_label, threshold=0.5):
     true_binary = (labels == positive_index).astype(np.int64)
-    pred_binary = (preds == positive_index).astype(np.int64)
     if probs.ndim == 2:
         positive_probs = probs[:, positive_index]
     else:
         positive_probs = probs
+    pred_binary = (positive_probs >= threshold).astype(np.int64)
     tn, fp, fn, tp = confusion_matrix(true_binary, pred_binary, labels=[0, 1]).ravel()
     return {
         "positive_label": positive_label,
         "negative_label": f"NOT_{positive_label}",
+        "decision_rule": f"P({positive_label}) >= threshold",
+        "threshold": threshold,
         "accuracy": float(accuracy_score(true_binary, pred_binary)),
         "f1": float(f1_score(true_binary, pred_binary, zero_division=0)),
         "auc": _safe_auc(true_binary, positive_probs, 2),
@@ -82,13 +84,13 @@ def cls_metrics(
         )
     if binary_positive_label and binary_positive_label in label_names:
         positive_index = label_names.index(binary_positive_label)
-        metrics["binary_i63"] = _binary_one_vs_rest_metrics(labels, probs, preds, positive_index, binary_positive_label)
+        metrics["binary_i63"] = _binary_one_vs_rest_metrics(labels, probs, positive_index, binary_positive_label, threshold)
     if loss is not None:
         metrics = {"loss": float(loss), **metrics}
     return metrics
 
 
-def save_preds(path, ids, labels, probs, preds, id_field, label_names=None, binary_positive_label=None):
+def save_preds(path, ids, labels, probs, preds, id_field, label_names=None, binary_positive_label=None, threshold=0.5):
     probs = np.asarray(probs, dtype=np.float32)
     if probs.ndim == 1:
         probs = np.stack([1.0 - probs, probs], axis=1)
@@ -119,7 +121,7 @@ def save_preds(path, ids, labels, probs, preds, id_field, label_names=None, bina
                 row[field] = round_float(prob)
             if positive_index is not None:
                 row["true_binary_i63"] = int(int(label) == positive_index)
-                row["pred_binary_i63"] = int(int(pred) == positive_index)
+                row["pred_binary_i63"] = int(prob_row[positive_index] >= threshold)
                 row["prob_binary_i63"] = round_float(prob_row[positive_index])
             writer.writerow(row)
 

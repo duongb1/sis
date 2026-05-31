@@ -32,12 +32,20 @@ def parse_args():
     p.add_argument("--max-len", type=int, default=None)
     p.add_argument("--batch", type=int, default=16)
     p.add_argument("--threshold", type=float, default=0.5)
+    p.add_argument("--thresholds", default=None, help="Comma-separated thresholds for binary_positive_label metrics, e.g. 0.30,0.35,0.40,0.45,0.50.")
     p.add_argument("--binary-positive-label", default=None, help="Class treated as positive for one-vs-rest binary metrics. Defaults to checkpoint value or I63_INFARCTION.")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--workers", type=int, default=0)
     p.add_argument("--cpu", action="store_true")
     p.add_argument("--no-mgpu", action="store_true")
     return p.parse_args()
+
+
+def parse_thresholds(value, default):
+    if value is None:
+        return [default]
+    thresholds = [float(item.strip()) for item in str(value).split(",") if item.strip()]
+    return thresholds or [default]
 
 
 def load_checkpoint_info(checkpoint):
@@ -137,10 +145,23 @@ def main():
         "id",
         label_names=labels,
         binary_positive_label=binary_positive_label,
+        threshold=args.threshold,
     )
     save_records(out / "dataset_records.csv", records)
+    threshold_metrics = {}
+    for threshold in parse_thresholds(args.thresholds, args.threshold):
+        sweep_metrics, _, _, _, _ = eval_text(
+            model,
+            test_loader,
+            device,
+            threshold,
+            desc=f"Evaluating {args.dataset} test threshold={threshold:.2f}",
+            label_names=labels,
+            binary_positive_label=binary_positive_label,
+        )
+        threshold_metrics[str(threshold)] = round_metrics(sweep_metrics.get("binary_i63", sweep_metrics))
     with open(out / "metrics.json", "w", encoding="utf-8") as f:
-        json.dump({"test": rounded}, f, ensure_ascii=False, indent=2)
+        json.dump({"test": rounded, "binary_threshold_sweep": threshold_metrics}, f, ensure_ascii=False, indent=2)
     print(format_metrics_summary("test", rounded))
     print(f"Saved full metrics to {out / 'metrics.json'}")
 

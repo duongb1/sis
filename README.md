@@ -66,6 +66,12 @@ Outputs are written to `/kaggle/working/sis_excel_5fold/<experiment>/fold_<0-4>/
 python run_excel_5fold.py --dry-run
 ```
 
+For multi-class checkpoints, `binary_i63` is evaluated by thresholding `P(I63_INFARCTION)` rather than by checking whether the 4-class argmax is `I63_INFARCTION`. The default 5-fold runner writes a binary threshold sweep for:
+
+```text
+0.30, 0.35, 0.40, 0.45, 0.50
+```
+
 ## Train Large And Small Text Folders
 
 For the Kaggle `sis` input folder that contains:

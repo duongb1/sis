@@ -51,6 +51,7 @@ def parse_args():
     p.add_argument("--accum", type=int, default=1)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--threshold", type=float, default=0.5)
+    p.add_argument("--thresholds", default="0.30,0.35,0.40,0.45,0.50", help="Threshold sweep written to metrics.json for binary_i63.")
     p.add_argument("--workers", type=int, default=0)
     p.add_argument("--folds", type=int, default=5)
     p.add_argument("--val-ratio", type=float, default=0.1)
@@ -134,6 +135,8 @@ def train_cmd(args, experiment, fold, out):
         args.seed,
         "--threshold",
         args.threshold,
+        "--thresholds",
+        args.thresholds,
         "--workers",
         args.workers,
     ]
