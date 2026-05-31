@@ -96,6 +96,28 @@ Tuned ensemble is opt-in with `--ensemble-mode tuned`.
 
 For valid ensembling, the runner forces both small models to use the same fold membership by stratifying fold assignment with the filename-derived binary label.
 
+The runner also evaluates an I63-oriented risk score from `small_multiclass`:
+
+```text
+risk_score = P(I63_INFARCTION) + alpha * P(OTHER_CEREBROVASCULAR)
+```
+
+`alpha` and threshold are selected on each fold's validation set, then applied once on that fold's test set. Defaults:
+
+```text
+alpha: 0.00, 0.05, 0.10, 0.15, 0.20, 0.30
+threshold: 0.30, 0.35, 0.40, 0.45, 0.50, 0.55
+objective: maximize specificity subject to sensitivity >= 0.80
+```
+
+Outputs are saved under:
+
+```text
+/kaggle/working/sis_excel_5fold/small_risk_score/
+```
+
+For each risk-score fold, the log prints selected `alpha`, selected threshold, objective, validation metrics, test metrics, and confusion matrices in `[[TN, FP], [FN, TP]]` format. The 5-fold summary prints mean ± std and aggregate test confusion counts (`total_tn`, `total_fp`, `total_fn`, `total_tp`).
+
 ## Train Large And Small Text Folders
 
 For the Kaggle `sis` input folder that contains:
