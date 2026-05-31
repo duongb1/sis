@@ -79,11 +79,20 @@ After all 5 folds finish for an experiment, the runner prints mean ± std and sa
 /kaggle/working/sis_excel_5fold/<experiment>/summary_5fold.csv
 ```
 
-The runner also evaluates a score-level ensemble for the small models after both `small_binary` and `small_multiclass` finish. It tunes `beta` and threshold on each fold's validation set, applies the selected pair once on that fold's test set, then prints/saves 5-fold mean ± std under:
+The runner also evaluates a score-level ensemble for the small models after both `small_binary` and `small_multiclass` finish. The default is the clean fixed baseline:
+
+```text
+score = 0.5 * P_binary + 0.5 * P_multi
+threshold = 0.5
+```
+
+It prints/saves 5-fold mean ± std under:
 
 ```text
 /kaggle/working/sis_excel_5fold/small_ensemble/
 ```
+
+Tuned ensemble is opt-in with `--ensemble-mode tuned`.
 
 For valid ensembling, the runner forces both small models to use the same fold membership by stratifying fold assignment with the filename-derived binary label.
 
