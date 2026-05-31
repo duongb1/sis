@@ -118,6 +118,17 @@ Outputs are saved under:
 
 For each risk-score fold, the log prints selected `alpha`, selected threshold, objective, validation metrics, test metrics, and confusion matrices in `[[TN, FP], [FN, TP]]` format. The 5-fold summary prints mean ± std and aggregate test confusion counts (`total_tn`, `total_fp`, `total_fn`, `total_tp`).
 
+At the end, the runner prints a compact small-model report with:
+
+```text
+5-fold summary table for small_binary, small_multiclass_to_binary, small_risk_score, small_ensemble
+aggregate confusion counts for every model
+FP/FN trade-off versus small_binary
+risk score objective, constraint, alpha grid, threshold grid
+best model by F1, AUC, sensitivity, specificity, and balanced accuracy
+compact threshold sweep tables for small_binary and small_multiclass
+```
+
 ## Train Large And Small Text Folders
 
 For the Kaggle `sis` input folder that contains:
