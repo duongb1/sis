@@ -112,13 +112,20 @@ def _split_by_label(records, seed=42, val_ratio=0.1, test_ratio=0.1):
     return records
 
 
-def _split_excel_kfold(records, seed=42, n_folds=5, fold_index=0, val_ratio=0.1):
+def _split_excel_kfold(records, seed=42, n_folds=5, fold_index=0, val_ratio=0.1, split_label="target"):
     if n_folds < 2:
         raise ValueError("--n-folds must be at least 2.")
     if fold_index < 0 or fold_index >= n_folds:
         raise ValueError(f"--fold-index must be between 0 and {n_folds - 1}.")
 
-    y = [record["label"] for record in records]
+    if split_label == "binary":
+        y = [record["binary_label_name"] for record in records]
+    elif split_label == "multiclass":
+        y = [record["multiclass_label_name"] for record in records]
+    elif split_label == "target":
+        y = [record["label"] for record in records]
+    else:
+        raise ValueError(f"Unknown split_label: {split_label}")
     indices = list(range(len(records)))
     splitter = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=seed)
     folds = list(splitter.split(indices, y))
@@ -167,6 +174,7 @@ def collect_excel_text(
     split_strategy="random",
     n_folds=5,
     fold_index=0,
+    split_label="target",
 ):
     paths = _excel_paths(data)
     if not paths:
@@ -211,7 +219,14 @@ def collect_excel_text(
                 }
             )
     if split_strategy == "kfold":
-        records = _split_excel_kfold(records, seed=seed, n_folds=n_folds, fold_index=fold_index, val_ratio=val_ratio)
+        records = _split_excel_kfold(
+            records,
+            seed=seed,
+            n_folds=n_folds,
+            fold_index=fold_index,
+            val_ratio=val_ratio,
+            split_label=split_label,
+        )
     elif split_strategy == "random":
         records = _split_by_label(records, seed=seed, val_ratio=val_ratio, test_ratio=test_ratio)
     else:
