@@ -116,6 +116,8 @@ Outputs are saved under:
 /kaggle/working/sis_excel_5fold/small_risk_score/
 ```
 
+For each risk-score fold, the log prints selected `alpha`, selected threshold, objective, validation metrics, test metrics, and confusion matrices in `[[TN, FP], [FN, TP]]` format. The 5-fold summary prints mean ± std and aggregate test confusion counts (`total_tn`, `total_fp`, `total_fn`, `total_tp`).
+
 ## Train Large And Small Text Folders
 
 For the Kaggle `sis` input folder that contains:

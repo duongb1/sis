@@ -136,6 +136,32 @@ def write_summary_csv(path, summary):
             )
 
 
+def fmt_metric(value):
+    return "nan" if value is None or np.isnan(value) else f"{value:.3f}"
+
+
+def format_binary_metrics(metrics):
+    return (
+        f"acc={fmt_metric(metrics.get('accuracy'))} "
+        f"f1={fmt_metric(metrics.get('f1'))} "
+        f"auc={fmt_metric(metrics.get('auc'))} "
+        f"sens={fmt_metric(metrics.get('sensitivity'))} "
+        f"spec={fmt_metric(metrics.get('specificity'))} "
+        f"bal_acc={fmt_metric(metrics.get('balanced_accuracy'))} "
+        f"cm={metrics.get('confusion_matrix')}"
+    )
+
+
+def print_risk_fold_summary(fold, alpha, threshold, objective, val_metrics, test_metrics):
+    print(
+        f"risk_score fold {fold}: alpha={alpha:.2f}, threshold={threshold:.2f}, "
+        f"objective={objective}"
+    )
+    print("formula: P(I63_INFARCTION) + alpha * P(OTHER_CEREBROVASCULAR)")
+    print(f"val:  {format_binary_metrics(val_metrics)}")
+    print(f"test: {format_binary_metrics(test_metrics)}")
+
+
 def binary_metrics(y_true, score, threshold):
     y_true = np.asarray(y_true, dtype=np.int64)
     score = np.asarray(score, dtype=np.float64)
@@ -158,6 +184,7 @@ def binary_metrics(y_true, score, threshold):
         "fp": int(fp),
         "fn": int(fn),
         "tp": int(tp),
+        "confusion_matrix": [[int(tn), int(fp)], [int(fn), int(tp)]],
     }
 
 
@@ -448,32 +475,59 @@ def run_small_risk_score(output_dir, folds, alphas, thresholds, min_sensitivity,
         threshold = best["threshold"]
         test_score = p_i63_test + alpha * p_other_test
         test_metrics = binary_metrics(y_test, test_score, threshold)
+        val_metrics = best["metrics"]
+        print_risk_fold_summary(fold, alpha, threshold, objective, val_metrics, test_metrics)
 
         fold_dir = risk_dir / f"fold_{fold}"
         fold_dir.mkdir(parents=True, exist_ok=True)
         write_risk_predictions(fold_dir / "test_predictions_risk_score.csv", test_ids, y_test, p_i63_test, p_other_test, alpha, threshold)
         with open(fold_dir / "metrics.json", "w", encoding="utf-8") as f:
-            json.dump({"selected": best, "test": test_metrics}, f, ensure_ascii=False, indent=2)
+            json.dump(
+                {
+                    "formula": "P(I63_INFARCTION) + alpha * P(OTHER_CEREBROVASCULAR)",
+                    "selection_objective": objective,
+                    "selected": best,
+                    "val": val_metrics,
+                    "test": test_metrics,
+                },
+                f,
+                ensure_ascii=False,
+                indent=2,
+            )
 
         row = {
             "fold": fold,
+            "selection_objective": objective,
             "selected.alpha": alpha,
             "selected.threshold": threshold,
-            "selected.val_sensitivity": best["metrics"]["sensitivity"],
-            "selected.val_specificity": best["metrics"]["specificity"],
+            "selected.val_sensitivity": val_metrics["sensitivity"],
+            "selected.val_specificity": val_metrics["specificity"],
+            "selected.val_balanced_accuracy": val_metrics["balanced_accuracy"],
         }
+        for key, value in val_metrics.items():
+            row[f"val.{key}"] = value
         for key, value in test_metrics.items():
             row[f"test.{key}"] = value
         fold_rows.append(row)
 
         flattened = {}
-        flatten_numeric("selected", best, flattened)
+        flatten_numeric("selected", {"alpha": alpha, "threshold": threshold}, flattened)
+        flatten_numeric("selected.val", val_metrics, flattened)
+        flatten_numeric("val", val_metrics, flattened)
         flatten_numeric("test", test_metrics, flattened)
         summary_rows.append(flattened)
 
     summary = summarize_metric_rows(summary_rows)
+    totals = {
+        "total_tn": int(sum(row["test.tn"] for row in fold_rows)),
+        "total_fp": int(sum(row["test.fp"] for row in fold_rows)),
+        "total_fn": int(sum(row["test.fn"] for row in fold_rows)),
+        "total_tp": int(sum(row["test.tp"] for row in fold_rows)),
+    }
     with open(risk_dir / "summary_5fold.json", "w", encoding="utf-8") as f:
-        json.dump(summary, f, ensure_ascii=False, indent=2)
+        json.dump({"metrics": summary, "aggregate_confusion_counts": totals}, f, ensure_ascii=False, indent=2)
+    with open(risk_dir / "aggregate_confusion_counts.json", "w", encoding="utf-8") as f:
+        json.dump(totals, f, ensure_ascii=False, indent=2)
     write_summary_csv(risk_dir / "summary_5fold.csv", summary)
     with open(risk_dir / "fold_settings.csv", "w", newline="", encoding="utf-8") as f:
         fieldnames = sorted(set().union(*(row.keys() for row in fold_rows)))
@@ -481,6 +535,11 @@ def run_small_risk_score(output_dir, folds, alphas, thresholds, min_sensitivity,
         writer.writeheader()
         writer.writerows(fold_rows)
     print_key_summary("small_risk_score", summary)
+    print(
+        "small_risk_score aggregate confusion counts: "
+        f"total_tn={totals['total_tn']} total_fp={totals['total_fp']} "
+        f"total_fn={totals['total_fn']} total_tp={totals['total_tp']}"
+    )
     return summary
 
 
@@ -510,7 +569,16 @@ def print_key_summary(name, summary):
         if key.startswith("binary_threshold_sweep.test."):
             stats = summary[key]
             print(f"{key}: {stats['mean']:.3f} ± {stats['std']:.3f}")
-    for key in ["selected.alpha", "selected.beta", "selected.threshold", "selected.metrics.sensitivity", "selected.metrics.specificity"]:
+    for key in [
+        "selected.alpha",
+        "selected.beta",
+        "selected.threshold",
+        "selected.val.sensitivity",
+        "selected.val.specificity",
+        "selected.val.balanced_accuracy",
+        "selected.metrics.sensitivity",
+        "selected.metrics.specificity",
+    ]:
         stats = summary.get(key)
         if stats:
             print(f"{key}: {stats['mean']:.3f} ± {stats['std']:.3f}")
