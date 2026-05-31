@@ -63,6 +63,9 @@ def parse_args():
     p.add_argument("--test-ratio", type=float, default=0.2, help="Documented protocol ratio. With 5 folds, test is one fold = 0.2.")
     p.add_argument("--only", default="small_binary,small_multiclass", help="Comma-separated experiment names to run. Default runs only small_binary and small_multiclass. Use --only all to run every experiment.")
     p.add_argument("--no-ensemble", action="store_true", help="Do not run small_binary + small_multiclass score-level ensemble after folds finish.")
+    p.add_argument("--ensemble-mode", choices=["fixed", "tuned"], default="fixed", help="fixed uses one beta/threshold for every fold; tuned selects beta/threshold on validation.")
+    p.add_argument("--ensemble-beta", type=float, default=0.5, help="Fixed ensemble beta for --ensemble-mode fixed.")
+    p.add_argument("--ensemble-threshold", type=float, default=0.5, help="Fixed ensemble threshold for --ensemble-mode fixed.")
     p.add_argument("--ensemble-betas", default=None, help="Comma-separated beta grid. Defaults to 0.00,0.05,...,1.00.")
     p.add_argument("--ensemble-thresholds", default=None, help="Comma-separated threshold grid. Defaults to 0.20,0.21,...,0.80.")
     p.add_argument("--ensemble-min-sensitivity", type=float, default=0.83)
@@ -248,7 +251,7 @@ def write_ensemble_predictions(path, ids, y_true, p_binary, p_multi, beta, thres
             )
 
 
-def run_small_ensemble(output_dir, folds, betas, thresholds, min_sensitivity, objective):
+def run_small_ensemble(output_dir, folds, mode, fixed_beta, fixed_threshold, betas, thresholds, min_sensitivity, objective):
     ensemble_dir = output_dir / "small_ensemble"
     ensemble_dir.mkdir(parents=True, exist_ok=True)
     fold_rows = []
@@ -276,9 +279,21 @@ def run_small_ensemble(output_dir, folds, betas, thresholds, min_sensitivity, ob
             read_binary_predictions(binary_dir / "test_predictions_best_auc.csv"),
             read_binary_predictions(multi_dir / "test_predictions_best_auc.csv"),
         )
-        best = tune_ensemble(p_bin_val, p_multi_val, y_val, betas, thresholds, min_sensitivity, objective)
-        beta = best["beta"]
-        threshold = best["threshold"]
+        if mode == "fixed":
+            beta = fixed_beta
+            threshold = fixed_threshold
+            val_score = beta * p_bin_val + (1.0 - beta) * p_multi_val
+            best = {
+                "mode": "fixed",
+                "beta": float(beta),
+                "threshold": float(threshold),
+                "metrics": binary_metrics(y_val, val_score, threshold),
+            }
+        else:
+            best = tune_ensemble(p_bin_val, p_multi_val, y_val, betas, thresholds, min_sensitivity, objective)
+            best["mode"] = "tuned"
+            beta = best["beta"]
+            threshold = best["threshold"]
         test_score = beta * p_bin_test + (1.0 - beta) * p_multi_test
         test_metrics = binary_metrics(y_test, test_score, threshold)
 
@@ -290,6 +305,7 @@ def run_small_ensemble(output_dir, folds, betas, thresholds, min_sensitivity, ob
 
         row = {
             "fold": fold,
+            "selected.mode": best["mode"],
             "selected.beta": beta,
             "selected.threshold": threshold,
             "selected.val_sensitivity": best["metrics"]["sensitivity"],
@@ -482,6 +498,9 @@ def main():
         run_small_ensemble(
             output_dir,
             args.folds,
+            args.ensemble_mode,
+            args.ensemble_beta,
+            args.ensemble_threshold,
             betas,
             thresholds,
             args.ensemble_min_sensitivity,
