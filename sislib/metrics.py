@@ -24,6 +24,8 @@ def _binary_one_vs_rest_metrics(labels, probs, positive_index, positive_label, t
         positive_probs = probs
     pred_binary = (positive_probs >= threshold).astype(np.int64)
     tn, fp, fn, tp = confusion_matrix(true_binary, pred_binary, labels=[0, 1]).ravel()
+    sensitivity = float(tp / (tp + fn)) if (tp + fn) else float("nan")
+    specificity = float(tn / (tn + fp)) if (tn + fp) else float("nan")
     return {
         "positive_label": positive_label,
         "negative_label": f"NOT_{positive_label}",
@@ -32,8 +34,9 @@ def _binary_one_vs_rest_metrics(labels, probs, positive_index, positive_label, t
         "accuracy": float(accuracy_score(true_binary, pred_binary)),
         "f1": float(f1_score(true_binary, pred_binary, zero_division=0)),
         "auc": _safe_auc(true_binary, positive_probs, 2),
-        "sensitivity": float(tp / (tp + fn)) if (tp + fn) else float("nan"),
-        "specificity": float(tn / (tn + fp)) if (tn + fp) else float("nan"),
+        "sensitivity": sensitivity,
+        "specificity": specificity,
+        "balanced_accuracy": float((sensitivity + specificity) / 2.0),
         "confusion_matrix": [[int(tn), int(fp)], [int(fn), int(tp)]],
         "num_positive": int(true_binary.sum()),
         "num_negative": int((true_binary == 0).sum()),
@@ -145,6 +148,7 @@ def format_metrics_summary(name, metrics):
             f"auc={binary.get('auc')} "
             f"sens={binary.get('sensitivity')} "
             f"spec={binary.get('specificity')} "
+            f"bal_acc={binary.get('balanced_accuracy')} "
             f"cm={binary.get('confusion_matrix')}"
         )
     return "\n".join(lines)

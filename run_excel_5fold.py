@@ -558,6 +558,7 @@ def print_key_summary(name, summary):
         "test.binary_i63.auc",
         "test.binary_i63.sensitivity",
         "test.binary_i63.specificity",
+        "test.binary_i63.balanced_accuracy",
     ]
     print("\n" + "-" * 80)
     print(f"5-fold mean ± std: {name}")
@@ -582,6 +583,177 @@ def print_key_summary(name, summary):
         stats = summary.get(key)
         if stats:
             print(f"{key}: {stats['mean']:.3f} ± {stats['std']:.3f}")
+
+
+def with_balanced_accuracy(metrics):
+    metrics = dict(metrics)
+    if "balanced_accuracy" not in metrics and "sensitivity" in metrics and "specificity" in metrics:
+        metrics["balanced_accuracy"] = float((metrics["sensitivity"] + metrics["specificity"]) / 2.0)
+    return metrics
+
+
+def extract_test_binary_metrics(metrics):
+    test = metrics.get("test", {})
+    if "binary_i63" in test:
+        return with_balanced_accuracy(test["binary_i63"])
+    return with_balanced_accuracy(test)
+
+
+def confusion_counts(metrics):
+    if "confusion_matrix" in metrics:
+        (tn, fp), (fn, tp) = metrics["confusion_matrix"]
+        return {"tn": int(tn), "fp": int(fp), "fn": int(fn), "tp": int(tp)}
+    return {key: int(metrics.get(key, 0)) for key in ("tn", "fp", "fn", "tp")}
+
+
+def collect_model_report(output_dir, folder, folds):
+    rows = []
+    counts = {"tn": 0, "fp": 0, "fn": 0, "tp": 0}
+    for fold in range(folds):
+        path = output_dir / folder / f"fold_{fold}" / "metrics.json"
+        if not path.exists():
+            return None
+        data = load_json(path)
+        metrics = extract_test_binary_metrics(data)
+        row = {f"test.{key}": value for key, value in metrics.items() if isinstance(value, (int, float)) and not isinstance(value, bool)}
+        selected = data.get("selected", {})
+        for key in ("alpha", "beta", "threshold"):
+            if key in selected:
+                row[f"selected.{key}"] = float(selected[key])
+        if "val" in data:
+            val_metrics = with_balanced_accuracy(data["val"])
+            for key, value in val_metrics.items():
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    row[f"selected.val.{key}"] = float(value)
+        rows.append(row)
+        fold_counts = confusion_counts(metrics)
+        for key in counts:
+            counts[key] += fold_counts[key]
+    return {"summary": summarize_metric_rows(rows), "counts": counts}
+
+
+def mean_std_text(summary, key):
+    stats = summary.get(key)
+    if not stats:
+        return "n/a"
+    return f"{stats['mean']:.3f}±{stats['std']:.3f}"
+
+
+def print_threshold_sweep_table(output_dir, folder, folds):
+    rows_by_threshold = {}
+    for fold in range(folds):
+        path = output_dir / folder / f"fold_{fold}" / "metrics.json"
+        if not path.exists():
+            return
+        sweep = load_json(path).get("binary_threshold_sweep", {}).get("test", {})
+        for threshold, metrics in sweep.items():
+            metrics = with_balanced_accuracy(metrics)
+            rows_by_threshold.setdefault(threshold, []).append(
+                {f"test.{key}": value for key, value in metrics.items() if key in {"accuracy", "f1", "auc", "sensitivity", "specificity", "balanced_accuracy"}}
+            )
+    if not rows_by_threshold:
+        return
+    print(f"\nThreshold sweep: {folder}")
+    print("threshold | acc       | f1        | auc       | sens      | spec      | bal_acc")
+    for threshold in sorted(rows_by_threshold, key=lambda item: float(item)):
+        summary = summarize_metric_rows(rows_by_threshold[threshold])
+        print(
+            f"{float(threshold):>9.2f} | "
+            f"{mean_std_text(summary, 'test.accuracy'):<9} | "
+            f"{mean_std_text(summary, 'test.f1'):<9} | "
+            f"{mean_std_text(summary, 'test.auc'):<9} | "
+            f"{mean_std_text(summary, 'test.sensitivity'):<9} | "
+            f"{mean_std_text(summary, 'test.specificity'):<9} | "
+            f"{mean_std_text(summary, 'test.balanced_accuracy'):<9}"
+        )
+
+
+def best_model_line(reports, metric_key):
+    candidates = [(name, data["summary"].get(metric_key, {}).get("mean")) for name, data in reports.items()]
+    candidates = [(name, value) for name, value in candidates if value is not None and not np.isnan(value)]
+    if not candidates:
+        return None
+    best_value = max(value for _, value in candidates)
+    winners = [name for name, value in candidates if abs(value - best_value) < 1e-12]
+    return ", ".join(winners)
+
+
+def print_final_small_report(output_dir, args):
+    model_folders = [
+        ("small_binary", "small_binary"),
+        ("small_multiclass_to_binary", "small_multiclass"),
+        ("small_risk_score", "small_risk_score"),
+        ("small_ensemble", "small_ensemble"),
+    ]
+    reports = {}
+    for display_name, folder in model_folders:
+        report = collect_model_report(output_dir, folder, args.folds)
+        if report:
+            reports[display_name] = report
+    if not reports:
+        return
+
+    print("\n" + "-" * 80)
+    print("5-fold summary: small models")
+    print("Model                         Acc       F1        AUC       Sens      Spec      BalAcc")
+    for name, report in reports.items():
+        summary = report["summary"]
+        print(
+            f"{name:<29} "
+            f"{mean_std_text(summary, 'test.accuracy'):<9} "
+            f"{mean_std_text(summary, 'test.f1'):<9} "
+            f"{mean_std_text(summary, 'test.auc'):<9} "
+            f"{mean_std_text(summary, 'test.sensitivity'):<9} "
+            f"{mean_std_text(summary, 'test.specificity'):<9} "
+            f"{mean_std_text(summary, 'test.balanced_accuracy'):<9}"
+        )
+
+    print("\nAggregate confusion counts:")
+    for name, report in reports.items():
+        counts = report["counts"]
+        print(f"{name:<29} TN={counts['tn']} FP={counts['fp']} FN={counts['fn']} TP={counts['tp']}")
+
+    baseline = reports.get("small_binary", {}).get("counts")
+    if baseline:
+        print("\nFP/FN trade-off vs small_binary:")
+        for name, report in reports.items():
+            if name == "small_binary":
+                continue
+            counts = report["counts"]
+            print(f"{name:<29} FP {counts['fp'] - baseline['fp']:+d}, FN {counts['fn'] - baseline['fn']:+d}")
+
+    risk = reports.get("small_risk_score")
+    if risk:
+        print("\nRisk score setting:")
+        print("formula: P(I63_INFARCTION) + alpha * P(OTHER_CEREBROVASCULAR)")
+        print(f"objective: {args.risk_objective}")
+        print(f"constraint: val_sensitivity >= {args.risk_min_sensitivity:.2f}")
+        print(f"alpha_grid: [{', '.join(f'{x:.2f}' for x in parse_float_grid(args.risk_alphas, None))}]")
+        print(f"threshold_grid: [{', '.join(f'{x:.2f}' for x in parse_float_grid(args.risk_thresholds, None))}]")
+        summary = risk["summary"]
+        for key in [
+            "selected.alpha",
+            "selected.threshold",
+            "selected.val.sensitivity",
+            "selected.val.specificity",
+            "selected.val.balanced_accuracy",
+        ]:
+            print(f"{key}: {mean_std_text(summary, key)}")
+
+    print("\nBest metrics:")
+    for label, key in [
+        ("best_f1", "test.f1"),
+        ("best_auc", "test.auc"),
+        ("best_sensitivity", "test.sensitivity"),
+        ("best_specificity", "test.specificity"),
+        ("best_balanced_accuracy", "test.balanced_accuracy"),
+    ]:
+        winner = best_model_line(reports, key)
+        if winner:
+            print(f"{label}: {winner}")
+
+    print_threshold_sweep_table(output_dir, "small_binary", args.folds)
+    print_threshold_sweep_table(output_dir, "small_multiclass", args.folds)
 
 
 def aggregate_experiment(output_dir, experiment_name, folds):
@@ -736,6 +908,8 @@ def main():
             args.risk_min_sensitivity,
             args.risk_objective,
         )
+    if not args.dry_run:
+        print_final_small_report(output_dir, args)
 
 
 if __name__ == "__main__":
