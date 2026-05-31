@@ -45,20 +45,20 @@ Excel input is split into train/val/test with stratified ratios controlled by `-
 
 ## Excel 5-Fold Protocol
 
-Run all four requested experiments with 5 folds, where each fold uses 70% train, 10% validation, and 20% test:
+Run the small-set experiments with 5 folds, where each fold uses 70% train, 10% validation, and 20% test:
 
 ```bash
 python run_excel_5fold.py
 ```
 
-This runs:
+By default this currently runs only:
 
 ```text
-large_binary       /kaggle/input/datasets/duongb/cthsis/9937_co_label.xlsx + /kaggle/input/datasets/duongb/cthsis/9937_khong_label.xlsx, target from filename co/khong
 small_binary       /kaggle/input/datasets/duongb/cthsis/700_co_label.xlsx + /kaggle/input/datasets/duongb/cthsis/700_khong_label.xlsx, target from filename co/khong
-large_multiclass   /kaggle/input/datasets/duongb/cthsis/9937_co_label.xlsx + /kaggle/input/datasets/duongb/cthsis/9937_khong_label.xlsx, target from LABEL
 small_multiclass   /kaggle/input/datasets/duongb/cthsis/700_co_label.xlsx + /kaggle/input/datasets/duongb/cthsis/700_khong_label.xlsx, target from LABEL
 ```
+
+Use `--only all` to also run `large_binary` and `large_multiclass`.
 
 Outputs are written to `/kaggle/working/sis_excel_5fold/<experiment>/fold_<0-4>/` by default. To check commands without training:
 
@@ -70,6 +70,13 @@ For multi-class checkpoints, `binary_i63` is evaluated by thresholding `P(I63_IN
 
 ```text
 0.30, 0.35, 0.40, 0.45, 0.50
+```
+
+After all 5 folds finish for an experiment, the runner prints mean ± std and saves:
+
+```text
+/kaggle/working/sis_excel_5fold/<experiment>/summary_5fold.json
+/kaggle/working/sis_excel_5fold/<experiment>/summary_5fold.csv
 ```
 
 ## Train Large And Small Text Folders

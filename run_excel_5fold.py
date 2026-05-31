@@ -1,8 +1,12 @@
 import argparse
+import csv
+import json
 import os
 import subprocess
 import sys
 from pathlib import Path
+
+import numpy as np
 
 
 ROOT = Path(__file__).resolve().parent
@@ -56,7 +60,7 @@ def parse_args():
     p.add_argument("--folds", type=int, default=5)
     p.add_argument("--val-ratio", type=float, default=0.1)
     p.add_argument("--test-ratio", type=float, default=0.2, help="Documented protocol ratio. With 5 folds, test is one fold = 0.2.")
-    p.add_argument("--only", default=None, help="Comma-separated experiment names to run.")
+    p.add_argument("--only", default="small_binary,small_multiclass", help="Comma-separated experiment names to run. Default runs only small_binary and small_multiclass. Use --only all to run every experiment.")
     p.add_argument("--force", action="store_true")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--cpu", action="store_true")
@@ -65,13 +69,111 @@ def parse_args():
 
 
 def selected_experiments(value):
-    if not value:
+    if not value or value.strip().lower() == "all":
         return EXPERIMENTS
     names = {item.strip() for item in value.split(",") if item.strip()}
     unknown = names - {experiment["name"] for experiment in EXPERIMENTS}
     if unknown:
         raise ValueError(f"Unknown experiment names: {', '.join(sorted(unknown))}")
     return [experiment for experiment in EXPERIMENTS if experiment["name"] in names]
+
+
+def load_json(path):
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def flatten_numeric(prefix, value, out):
+    if isinstance(value, dict):
+        for key, child in value.items():
+            flatten_numeric(f"{prefix}.{key}" if prefix else key, child, out)
+    elif isinstance(value, (int, float)) and not isinstance(value, bool):
+        out[prefix] = float(value)
+
+
+def summarize_metric_rows(rows):
+    keys = sorted(set().union(*(row.keys() for row in rows)))
+    summary = {}
+    for key in keys:
+        values = np.array([row[key] for row in rows if key in row and not np.isnan(row[key])], dtype=np.float64)
+        if values.size == 0:
+            continue
+        summary[key] = {
+            "mean": float(values.mean()),
+            "std": float(values.std(ddof=1)) if values.size > 1 else 0.0,
+            "n": int(values.size),
+        }
+    return summary
+
+
+def write_summary_csv(path, summary):
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=["metric", "mean", "std", "n", "mean_plus_minus_std"])
+        writer.writeheader()
+        for metric, stats in summary.items():
+            writer.writerow(
+                {
+                    "metric": metric,
+                    "mean": f"{stats['mean']:.6f}",
+                    "std": f"{stats['std']:.6f}",
+                    "n": stats["n"],
+                    "mean_plus_minus_std": f"{stats['mean']:.3f} ± {stats['std']:.3f}",
+                }
+            )
+
+
+def print_key_summary(name, summary):
+    keys = [
+        "test.accuracy",
+        "test.f1_macro",
+        "test.f1_weighted",
+        "test.auc",
+        "test.sensitivity",
+        "test.specificity",
+        "test.binary_i63.accuracy",
+        "test.binary_i63.f1",
+        "test.binary_i63.auc",
+        "test.binary_i63.sensitivity",
+        "test.binary_i63.specificity",
+    ]
+    print("\n" + "-" * 80)
+    print(f"5-fold mean ± std: {name}")
+    for key in keys:
+        stats = summary.get(key)
+        if stats:
+            print(f"{key}: {stats['mean']:.3f} ± {stats['std']:.3f}")
+    for key in sorted(summary):
+        if key.startswith("binary_threshold_sweep.test."):
+            stats = summary[key]
+            print(f"{key}: {stats['mean']:.3f} ± {stats['std']:.3f}")
+
+
+def aggregate_experiment(output_dir, experiment_name, folds):
+    rows = []
+    missing = []
+    for fold in range(folds):
+        metrics_path = output_dir / experiment_name / f"fold_{fold}" / "metrics.json"
+        if not metrics_path.exists():
+            missing.append(str(metrics_path))
+            continue
+        flattened = {}
+        flatten_numeric("", load_json(metrics_path), flattened)
+        rows.append(flattened)
+
+    if missing:
+        print(f"Skip summary for {experiment_name}: missing {len(missing)} metrics files.")
+        return None
+    if not rows:
+        return None
+
+    summary = summarize_metric_rows(rows)
+    summary_dir = output_dir / experiment_name
+    summary_dir.mkdir(parents=True, exist_ok=True)
+    with open(summary_dir / "summary_5fold.json", "w", encoding="utf-8") as f:
+        json.dump(summary, f, ensure_ascii=False, indent=2)
+    write_summary_csv(summary_dir / "summary_5fold.csv", summary)
+    print_key_summary(experiment_name, summary)
+    return summary
 
 
 def run_stage(name, cmd, done_path, force=False, dry_run=False):
@@ -166,6 +268,8 @@ def main():
                 force=args.force,
                 dry_run=args.dry_run,
             )
+        if not args.dry_run:
+            aggregate_experiment(output_dir, experiment["name"], args.folds)
 
 
 if __name__ == "__main__":
