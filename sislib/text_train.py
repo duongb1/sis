@@ -59,6 +59,27 @@ class PhoBERTClassifier(nn.Module):
         return {"loss": loss, "logits": logits, "attn_weights": attn_weights}
 
 
+class FieldTransformerBlock(nn.Module):
+    def __init__(self, hidden_size, num_heads=8, ffn_dim=1024, dropout=0.1):
+        super().__init__()
+        self.self_attn = nn.MultiheadAttention(hidden_size, num_heads, dropout=dropout, batch_first=True)
+        self.norm1 = nn.LayerNorm(hidden_size)
+        self.ffn = nn.Sequential(
+            nn.Linear(hidden_size, ffn_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(ffn_dim, hidden_size),
+        )
+        self.norm2 = nn.LayerNorm(hidden_size)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x, key_padding_mask=None):
+        attn_out, _ = self.self_attn(x, x, x, key_padding_mask=key_padding_mask, need_weights=False)
+        x = self.norm1(x + self.dropout(attn_out))
+        ffn_out = self.ffn(x)
+        return self.norm2(x + self.dropout(ffn_out))
+
+
 class FieldAwarePhoBERTClassifier(nn.Module):
     base_model_prefix = "encoder"
 
@@ -83,17 +104,16 @@ class FieldAwarePhoBERTClassifier(nn.Module):
         self.pooling = pooling
         self.attn_pool = AttentionPooling(hidden_size, dropout=dropout) if pooling == "attention" else None
         self.field_embeddings = nn.Embedding(num_fields, hidden_size)
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=hidden_size,
-            nhead=field_transformer_heads,
-            dim_feedforward=field_ffn_dim,
-            dropout=dropout,
-            batch_first=True,
-        )
-        self.field_transformer = nn.TransformerEncoder(
-            encoder_layer,
-            num_layers=field_transformer_layers,
-            enable_nested_tensor=False,
+        self.field_transformer = nn.ModuleList(
+            [
+                FieldTransformerBlock(
+                    hidden_size,
+                    num_heads=field_transformer_heads,
+                    ffn_dim=field_ffn_dim,
+                    dropout=dropout,
+                )
+                for _ in range(field_transformer_layers)
+            ]
         )
         self.field_attn = nn.Sequential(
             nn.Linear(hidden_size, hidden_size),
@@ -129,7 +149,10 @@ class FieldAwarePhoBERTClassifier(nn.Module):
 
         field_ids = torch.arange(num_fields, device=input_ids.device).unsqueeze(0).expand(batch_size, num_fields)
         field_repr = field_repr + self.field_embeddings(field_ids)
-        field_context = self.field_transformer(field_repr, src_key_padding_mask=field_mask == 0)
+        field_padding_mask = field_mask == 0
+        field_context = field_repr
+        for layer in self.field_transformer:
+            field_context = layer(field_context, key_padding_mask=field_padding_mask)
 
         field_scores = self.field_attn(field_context).squeeze(-1)
         field_scores = field_scores.masked_fill(field_mask == 0, torch.finfo(field_scores.dtype).min)
