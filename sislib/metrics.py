@@ -93,7 +93,7 @@ def cls_metrics(
     return metrics
 
 
-def save_preds(path, ids, labels, probs, preds, id_field, label_names=None, binary_positive_label=None, threshold=0.5):
+def save_preds(path, ids, labels, probs, preds, id_field, label_names=None, binary_positive_label=None, threshold=0.5, extra_rows=None):
     probs = np.asarray(probs, dtype=np.float32)
     if probs.ndim == 1:
         probs = np.stack([1.0 - probs, probs], axis=1)
@@ -105,14 +105,16 @@ def save_preds(path, ids, labels, probs, preds, id_field, label_names=None, bina
     if binary_positive_label and binary_positive_label in label_names:
         positive_index = label_names.index(binary_positive_label)
         binary_fields = ["true_binary_i63", "pred_binary_i63", "prob_binary_i63"]
+    extra_rows = list(extra_rows or [])
+    extra_fields = sorted(set().union(*(row.keys() for row in extra_rows))) if extra_rows else []
 
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(
             f,
-            fieldnames=[id_field, "true_label", "true_name", "pred_label", "pred_name", *binary_fields, *prob_fields],
+            fieldnames=[id_field, "true_label", "true_name", "pred_label", "pred_name", *binary_fields, *prob_fields, *extra_fields],
         )
         writer.writeheader()
-        for item_id, label, prob_row, pred in zip(ids, labels, probs, preds):
+        for index, (item_id, label, prob_row, pred) in enumerate(zip(ids, labels, probs, preds)):
             row = {
                 id_field: item_id,
                 "true_label": int(label),
@@ -126,6 +128,8 @@ def save_preds(path, ids, labels, probs, preds, id_field, label_names=None, bina
                 row["true_binary_i63"] = int(int(label) == positive_index)
                 row["pred_binary_i63"] = int(prob_row[positive_index] >= threshold)
                 row["prob_binary_i63"] = round_float(prob_row[positive_index])
+            if extra_rows:
+                row.update(extra_rows[index])
             writer.writerow(row)
 
 

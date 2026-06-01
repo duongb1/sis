@@ -59,6 +59,74 @@ class PhoBERTClassifier(nn.Module):
         return {"loss": loss, "logits": logits, "attn_weights": attn_weights}
 
 
+class FieldAwarePhoBERTClassifier(nn.Module):
+    base_model_prefix = "encoder"
+
+    def __init__(
+        self,
+        model_name="vinai/phobert-base",
+        num_labels=2,
+        num_fields=6,
+        dropout=0.1,
+        field_transformer_layers=1,
+        field_transformer_heads=8,
+        field_ffn_dim=1024,
+    ):
+        super().__init__()
+        from transformers import AutoModel
+
+        self.encoder = AutoModel.from_pretrained(model_name)
+        hidden_size = self.encoder.config.hidden_size
+        self.field_embeddings = nn.Embedding(num_fields, hidden_size)
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=hidden_size,
+            nhead=field_transformer_heads,
+            dim_feedforward=field_ffn_dim,
+            dropout=dropout,
+            batch_first=True,
+        )
+        self.field_transformer = nn.TransformerEncoder(encoder_layer, num_layers=field_transformer_layers)
+        self.field_attn = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size),
+            nn.Tanh(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_size, 1),
+        )
+        self.dropout = nn.Dropout(dropout)
+        self.classifier = nn.Linear(hidden_size, num_labels)
+        self.config = self.encoder.config
+        self.config.num_labels = num_labels
+
+    def forward(self, input_ids=None, attention_mask=None, field_mask=None, labels=None, **kwargs):
+        if input_ids.ndim != 3 or attention_mask.ndim != 3:
+            raise ValueError("FieldAwarePhoBERTClassifier expects input_ids and attention_mask shaped [B, F, L].")
+        batch_size, num_fields, seq_len = input_ids.shape
+        if field_mask is None:
+            field_mask = torch.ones((batch_size, num_fields), dtype=torch.long, device=input_ids.device)
+        else:
+            field_mask = field_mask.clone()
+        empty_rows = field_mask.sum(dim=1) == 0
+        if empty_rows.any():
+            field_mask[empty_rows, 0] = 1
+
+        flat_input_ids = input_ids.reshape(batch_size * num_fields, seq_len)
+        flat_attention_mask = attention_mask.reshape(batch_size * num_fields, seq_len)
+        outputs = self.encoder(input_ids=flat_input_ids, attention_mask=flat_attention_mask)
+        field_repr = outputs.last_hidden_state[:, 0].reshape(batch_size, num_fields, -1)
+
+        field_ids = torch.arange(num_fields, device=input_ids.device).unsqueeze(0).expand(batch_size, num_fields)
+        field_repr = field_repr + self.field_embeddings(field_ids)
+        field_context = self.field_transformer(field_repr, src_key_padding_mask=field_mask == 0)
+
+        field_scores = self.field_attn(field_context).squeeze(-1)
+        field_scores = field_scores.masked_fill(field_mask == 0, -1e9)
+        field_weights = torch.softmax(field_scores, dim=-1)
+        patient_repr = torch.sum(field_context * field_weights.unsqueeze(-1), dim=1)
+        logits = self.classifier(self.dropout(patient_repr))
+        loss = F.cross_entropy(logits, labels) if labels is not None else None
+        return {"loss": loss, "logits": logits, "field_weights": field_weights}
+
+
 class PhoBERTMultiTask(nn.Module):
     base_model_prefix = "encoder"
 
@@ -173,10 +241,11 @@ def multitask_epoch(model, loader, optimizer, scheduler, scaler, device, accum=1
 
 
 @torch.no_grad()
-def eval_text(model, loader, device, threshold=0.5, desc="Evaluating", label_names=None, binary_positive_label=None):
+def eval_text(model, loader, device, threshold=0.5, desc="Evaluating", label_names=None, binary_positive_label=None, return_field_weights=False):
     model.eval()
     total_loss, total_count = 0.0, 0
     ids, labels_all, probs_all = [], [], []
+    field_weights_all = []
     for batch in tqdm(loader, desc=desc, leave=False):
         inputs, batch_ids = batch_to_device(batch, device, "id")
         inputs.pop("sample_weight", None)
@@ -184,6 +253,8 @@ def eval_text(model, loader, device, threshold=0.5, desc="Evaluating", label_nam
         outputs = model(**inputs)
         loss = hf_loss(outputs, labels)
         probs = torch.softmax(_output_logits(outputs), dim=-1)
+        if return_field_weights and isinstance(outputs, dict) and outputs.get("field_weights") is not None:
+            field_weights_all.extend(outputs["field_weights"].detach().cpu().numpy().tolist())
         bs = labels.size(0)
         total_loss += loss.item() * bs
         total_count += bs
@@ -197,15 +268,24 @@ def eval_text(model, loader, device, threshold=0.5, desc="Evaluating", label_nam
     else:
         preds = probs.argmax(axis=1).astype(np.int64)
     loss = total_loss / max(total_count, 1)
-    return cls_metrics(
+    result = (
+        cls_metrics(
+            labels,
+            probs,
+            preds,
+            loss=loss,
+            threshold=threshold,
+            label_names=label_names,
+            binary_positive_label=binary_positive_label,
+        ),
+        ids,
         labels,
         probs,
         preds,
-        loss=loss,
-        threshold=threshold,
-        label_names=label_names,
-        binary_positive_label=binary_positive_label,
-    ), ids, labels, probs, preds
+    )
+    if return_field_weights:
+        return (*result, np.array(field_weights_all, dtype=np.float32) if field_weights_all else None)
+    return result
 
 
 @torch.no_grad()

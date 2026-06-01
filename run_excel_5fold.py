@@ -69,6 +69,12 @@ def parse_args():
     p.add_argument("--threshold", type=float, default=0.5)
     p.add_argument("--thresholds", default="0.30,0.35,0.40,0.45,0.50", help="Threshold sweep written to metrics.json for binary_i63.")
     p.add_argument("--pooling", choices=["cls", "attention"], default="cls", help="Pooling method after PhoBERT encoder.")
+    p.add_argument("--input-mode", choices=["concat", "field"], default="concat", help="Input representation mode: concat all fields or encode Excel fields separately.")
+    p.add_argument("--max-len-per-field", type=int, default=128)
+    p.add_argument("--field-transformer-layers", type=int, default=1)
+    p.add_argument("--field-transformer-heads", type=int, default=8)
+    p.add_argument("--field-ffn-dim", type=int, default=1024)
+    p.add_argument("--save-field-attention", action="store_true", help="Save field-level attention weights in field-aware prediction CSVs.")
     p.add_argument("--workers", type=int, default=0)
     p.add_argument("--folds", type=int, default=5)
     p.add_argument("--val-ratio", type=float, default=0.1)
@@ -438,9 +444,21 @@ def train_cmd(args, experiment, fold, out):
         args.thresholds,
         "--pooling",
         args.pooling,
+        "--input-mode",
+        args.input_mode,
+        "--max-len-per-field",
+        args.max_len_per_field,
+        "--field-transformer-layers",
+        args.field_transformer_layers,
+        "--field-transformer-heads",
+        args.field_transformer_heads,
+        "--field-ffn-dim",
+        args.field_ffn_dim,
         "--workers",
         args.workers,
     ]
+    if args.save_field_attention:
+        cmd.append("--save-field-attention")
     if experiment["task"] == "multitask":
         cmd.extend(["--lambda-aux", args.lambda_aux])
     if args.cpu:

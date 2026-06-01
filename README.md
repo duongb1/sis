@@ -75,6 +75,13 @@ cls         Use the default first-token representation path.
 attention   Learn token-level attention pooling over PhoBERT hidden states before classification.
 ```
 
+Field-aware mode:
+
+```text
+concat   Join all clinical fields into one sequence.
+field    Encode each clinical field separately with a shared PhoBERT encoder, then aggregate field representations with a lightweight Transformer and field attention pooling.
+```
+
 ## Excel 5-Fold Protocol
 
 Run the small-set experiments with 5 folds, where each fold uses 70% train, 10% validation, and 20% test:
@@ -106,6 +113,19 @@ python run_excel_5fold.py \
   --only small_binary \
   --pooling attention \
   --output-dir /kaggle/working/sis_excel_5fold_attnpool_binary \
+  --force
+```
+
+To run field-aware binary training first:
+
+```bash
+python run_excel_5fold.py \
+  --only small_binary \
+  --input-mode field \
+  --max-len-per-field 128 \
+  --batch 8 \
+  --accum 2 \
+  --output-dir /kaggle/working/sis_excel_5fold_fieldaware_binary \
   --force
 ```
 
