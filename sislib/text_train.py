@@ -20,7 +20,7 @@ class AttentionPooling(nn.Module):
 
     def forward(self, hidden_states, attention_mask):
         scores = self.proj(hidden_states).squeeze(-1)
-        scores = scores.masked_fill(attention_mask == 0, -1e9)
+        scores = scores.masked_fill(attention_mask == 0, torch.finfo(scores.dtype).min)
         weights = torch.softmax(scores, dim=-1)
         pooled = torch.sum(hidden_states * weights.unsqueeze(-1), dim=1)
         return pooled, weights
@@ -119,7 +119,7 @@ class FieldAwarePhoBERTClassifier(nn.Module):
         field_context = self.field_transformer(field_repr, src_key_padding_mask=field_mask == 0)
 
         field_scores = self.field_attn(field_context).squeeze(-1)
-        field_scores = field_scores.masked_fill(field_mask == 0, -1e9)
+        field_scores = field_scores.masked_fill(field_mask == 0, torch.finfo(field_scores.dtype).min)
         field_weights = torch.softmax(field_scores, dim=-1)
         patient_repr = torch.sum(field_context * field_weights.unsqueeze(-1), dim=1)
         logits = self.classifier(self.dropout(patient_repr))
