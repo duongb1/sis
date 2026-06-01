@@ -81,7 +81,7 @@ def multitask_epoch(model, loader, optimizer, scheduler, scaler, device, accum=1
         inputs.pop("sample_weight", None)
         labels = inputs["labels"]
         with torch.amp.autocast("cuda", enabled=device.type == "cuda"):
-            loss = model(**inputs, lambda_aux=lambda_aux)["loss"]
+            loss = model(**inputs, lambda_aux=lambda_aux)["loss"].mean()
             loss = loss / accum
         scaler.scale(loss).backward()
         if step % accum == 0 or step == len(loader):
@@ -144,7 +144,7 @@ def eval_multitask(model, loader, device, threshold=0.5, desc="Evaluating", bina
         labels = inputs["labels"]
         aux_labels = inputs["aux_labels"]
         outputs = model(**inputs)
-        loss = outputs["loss"]
+        loss = outputs["loss"].mean()
         binary_probs = torch.softmax(outputs["binary_logits"], dim=-1)
         aux_probs = torch.softmax(outputs["aux_logits"], dim=-1)
         bs = labels.size(0)
