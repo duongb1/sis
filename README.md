@@ -90,17 +90,17 @@ Run the small-set experiments with 5 folds, where each fold uses 70% train, 10% 
 python run_excel_5fold.py
 ```
 
-By default this currently runs only:
+By default this currently runs only the small binary field-aware attention experiment:
 
 ```text
 small_binary       /kaggle/input/datasets/duongb/cthsis/700_co_label.xlsx + /kaggle/input/datasets/duongb/cthsis/700_khong_label.xlsx, target from filename co/khong
-small_multiclass   /kaggle/input/datasets/duongb/cthsis/700_co_label.xlsx + /kaggle/input/datasets/duongb/cthsis/700_khong_label.xlsx, target from mapped 3-class LABEL
-small_multitask    /kaggle/input/datasets/duongb/cthsis/700_co_label.xlsx + /kaggle/input/datasets/duongb/cthsis/700_khong_label.xlsx, binary head + auxiliary 3-class head
+pooling            attention
+input_mode         field
 ```
 
-Use `--only all` to also run `large_binary`, `large_multiclass`, and `large_multitask`.
+Use `--only all` to also run `large_binary`, `large_multiclass`, `large_multitask`, `small_multiclass`, and `small_multitask`. Use `--input-mode concat --pooling cls` to reproduce the original concatenated CLS-pooling baseline.
 
-Outputs are written to `/kaggle/working/sis_excel_5fold/<experiment>/fold_<0-4>/` by default. To check commands without training:
+Outputs are written to `/kaggle/working/sis_excel_5fold_fieldaware_binary/<experiment>/fold_<0-4>/` by default. To check commands without training:
 
 ```bash
 python run_excel_5fold.py --dry-run
@@ -116,11 +116,12 @@ python run_excel_5fold.py \
   --force
 ```
 
-To run field-aware binary training first:
+The default command is equivalent to this field-aware binary run:
 
 ```bash
 python run_excel_5fold.py \
   --only small_binary \
+  --pooling attention \
   --input-mode field \
   --max-len-per-field 128 \
   --batch 8 \
