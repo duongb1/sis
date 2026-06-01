@@ -194,7 +194,10 @@ def with_balanced_accuracy(metrics):
 def extract_test_binary_metrics(metrics):
     test = metrics.get("test", {})
     if "primary_binary" in test:
-        return with_balanced_accuracy(test["primary_binary"])
+        primary = test["primary_binary"]
+        if "binary_i63" in primary:
+            return with_balanced_accuracy(primary["binary_i63"])
+        return with_balanced_accuracy(primary)
     if "binary_i63" in test:
         return with_balanced_accuracy(test["binary_i63"])
     return with_balanced_accuracy(test)

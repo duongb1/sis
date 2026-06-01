@@ -301,8 +301,16 @@ def main():
             all_metrics[split] = round_metrics(metrics)
             threshold_sweeps[split] = {}
             for threshold in parse_thresholds(args.thresholds, args.threshold):
-                sweep_metrics = cls_metrics(y, p, pred, threshold=threshold, label_names=labels, binary_positive_label=args.binary_positive_label)
-                threshold_sweeps[split][str(threshold)] = round_metrics(sweep_metrics.get("binary_i63", sweep_metrics))
+                sweep_pred = (p[:, 1] >= threshold).astype(np.int64)
+                sweep_metrics = cls_metrics(
+                    y,
+                    p,
+                    sweep_pred,
+                    threshold=threshold,
+                    label_names=labels,
+                    binary_positive_label=args.binary_positive_label,
+                )
+                threshold_sweeps[split][str(threshold)] = round_metrics(sweep_metrics["binary_i63"])
             save_preds(out / f"{split}_predictions_best_auc.csv", ids, y, p, pred, "id", label_names=labels, binary_positive_label=args.binary_positive_label, threshold=args.threshold)
             save_preds(out / f"{split}_aux_predictions_best_auc.csv", ids, aux_y, aux_p, aux_pred, "id", label_names=aux_labels, binary_positive_label=args.binary_positive_label, threshold=args.threshold)
             print(format_metrics_summary(f"{split}.primary_binary", all_metrics[split]["primary_binary"]))
