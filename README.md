@@ -130,6 +130,39 @@ python run_excel_5fold.py \
   --force
 ```
 
+To compare the three small binary variants on Kaggle dual T4 16GB:
+
+```bash
+python run_small_binary_pooling_compare.py --force
+```
+
+This runs the same 5-fold 70/10/20 protocol for:
+
+```text
+small_binary_cls          concat input + CLS pooling
+small_binary_attnpool     concat input + token attention pooling
+small_binary_fieldaware   per-field input + token attention + field Transformer attention
+```
+
+The script leaves multi-GPU enabled by default, so `train_text.py` uses `torch.nn.DataParallel` when both T4 GPUs are visible. The default dual-T4 settings are:
+
+```text
+CLS / attention pooling   batch=16, accum=1
+field-aware               batch=8, accum=2
+```
+
+If field-aware runs out of memory, retry with:
+
+```bash
+python run_small_binary_pooling_compare.py --field-batch 4 --field-accum 4 --force
+```
+
+The comparison summary is written to:
+
+```text
+/kaggle/working/sis_excel_5fold_compare/summary_compare.csv
+```
+
 For multi-class checkpoints, `binary_i63` is evaluated by thresholding `P(I63_INFARCTION)` rather than by checking whether the 4-class argmax is `I63_INFARCTION`. The default 5-fold runner writes a binary threshold sweep for:
 
 ```text
