@@ -21,7 +21,13 @@ LYDO, HB_BENHLY, HB_BANTHAN, HB_GIADINH, KB_TOANTHAN, KB_BOPHAN
 
 `STT` is ignored. `LABEL` is not included in the input text.
 
-Multi-class training uses `LABEL` as the target:
+Multi-class training uses `LABEL` as the target, with the Excel labels mapped at load time into 3 classes without modifying the Excel files:
+
+```text
+Class 0: I63_INFARCTION
+Class 1: OTHER_STROKE_LIKE = OTHER_CEREBROVASCULAR + STROKE_MIMIC_NEURO
+Class 2: DISTANT_OTHER
+```
 
 ```bash
 python train_text.py \
@@ -55,7 +61,7 @@ By default this currently runs only:
 
 ```text
 small_binary       /kaggle/input/datasets/duongb/cthsis/700_co_label.xlsx + /kaggle/input/datasets/duongb/cthsis/700_khong_label.xlsx, target from filename co/khong
-small_multiclass   /kaggle/input/datasets/duongb/cthsis/700_co_label.xlsx + /kaggle/input/datasets/duongb/cthsis/700_khong_label.xlsx, target from LABEL
+small_multiclass   /kaggle/input/datasets/duongb/cthsis/700_co_label.xlsx + /kaggle/input/datasets/duongb/cthsis/700_khong_label.xlsx, target from mapped 3-class LABEL
 ```
 
 Use `--only all` to also run `large_binary` and `large_multiclass`.

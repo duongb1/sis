@@ -11,6 +11,13 @@ from .common import LABELS, LABEL_TO_ID, SPLITS, read_text
 
 
 EXCEL_TEXT_COLUMNS = ["LYDO", "HB_BENHLY", "HB_BANTHAN", "HB_GIADINH", "KB_TOANTHAN", "KB_BOPHAN"]
+EXCEL_MULTICLASS_LABELS = ["I63_INFARCTION", "OTHER_STROKE_LIKE", "DISTANT_OTHER"]
+EXCEL_MULTICLASS_LABEL_MAP = {
+    "I63_INFARCTION": "I63_INFARCTION",
+    "OTHER_CEREBROVASCULAR": "OTHER_STROKE_LIKE",
+    "STROKE_MIMIC_NEURO": "OTHER_STROKE_LIKE",
+    "DISTANT_OTHER": "DISTANT_OTHER",
+}
 
 
 def parse_labels_arg(value):
@@ -72,6 +79,11 @@ def _label_from_excel_filename(path):
     if "co" in tokens:
         return "co"
     raise ValueError(f"Cannot infer binary label from Excel filename: {path.name}")
+
+
+def _excel_multiclass_label(value):
+    label = _clean_cell(value)
+    return EXCEL_MULTICLASS_LABEL_MAP.get(label, label)
 
 
 def _join_excel_row(row):
@@ -159,8 +171,11 @@ def discover_excel_labels(data, task="multiclass"):
         df = _read_excel(path)
         if "LABEL" not in df.columns:
             raise ValueError(f"Missing LABEL column in {path}")
-        labels.update(_clean_cell(value) for value in df["LABEL"].tolist())
-    return sorted(label for label in labels if label)
+        labels.update(_excel_multiclass_label(value) for value in df["LABEL"].tolist())
+    labels = {label for label in labels if label}
+    ordered = [label for label in EXCEL_MULTICLASS_LABELS if label in labels]
+    ordered.extend(sorted(labels - set(EXCEL_MULTICLASS_LABELS)))
+    return ordered
 
 
 def collect_excel_text(
@@ -192,7 +207,8 @@ def collect_excel_text(
         binary_label_name = _label_from_excel_filename(path)
         for index, row in df.iterrows():
             row_dict = row.to_dict()
-            multiclass_label = _clean_cell(row_dict.get("LABEL"))
+            raw_multiclass_label = _clean_cell(row_dict.get("LABEL"))
+            multiclass_label = _excel_multiclass_label(raw_multiclass_label)
             label_name = binary_label_name if task == "binary" else multiclass_label
             if not label_name:
                 skipped.append(f"{path}:{index + 2}:missing_label")
@@ -216,6 +232,7 @@ def collect_excel_text(
                     "row_index": index + 2,
                     "binary_label_name": binary_label_name,
                     "multiclass_label_name": multiclass_label,
+                    "raw_multiclass_label_name": raw_multiclass_label,
                 }
             )
     if split_strategy == "kfold":
@@ -398,7 +415,7 @@ class TextDataset(Dataset):
 
 
 def save_records(path, records):
-    optional_fields = ["source_file", "row_index", "binary_label_name", "multiclass_label_name", "fold"]
+    optional_fields = ["source_file", "row_index", "binary_label_name", "multiclass_label_name", "raw_multiclass_label_name", "fold"]
     fieldnames = ["id", "split", "label", "label_name", "text_path"]
     fieldnames.extend(field for field in optional_fields if any(field in row for row in records))
     with open(path, "w", newline="", encoding="utf-8") as f:
