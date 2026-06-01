@@ -7,7 +7,6 @@ import sys
 from pathlib import Path
 
 import numpy as np
-from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, roc_auc_score
 
 
 ROOT = Path(__file__).resolve().parent
@@ -62,14 +61,6 @@ def parse_args():
     p.add_argument("--val-ratio", type=float, default=0.1)
     p.add_argument("--test-ratio", type=float, default=0.2, help="Documented protocol ratio. With 5 folds, test is one fold = 0.2.")
     p.add_argument("--only", default="small_binary,small_multiclass", help="Comma-separated experiment names to run. Default runs only small_binary and small_multiclass. Use --only all to run every experiment.")
-    p.add_argument("--no-ensemble", action="store_true", help="Do not run small_binary + small_multiclass score-level ensemble after folds finish.")
-    p.add_argument("--ensemble-mode", choices=["fixed", "tuned"], default="fixed", help="fixed uses one beta/threshold for every fold; tuned selects beta/threshold on validation.")
-    p.add_argument("--ensemble-beta", type=float, default=0.5, help="Fixed ensemble beta for --ensemble-mode fixed.")
-    p.add_argument("--ensemble-threshold", type=float, default=0.5, help="Fixed ensemble threshold for --ensemble-mode fixed.")
-    p.add_argument("--ensemble-betas", default=None, help="Comma-separated beta grid. Defaults to 0.00,0.05,...,1.00.")
-    p.add_argument("--ensemble-thresholds", default=None, help="Comma-separated threshold grid. Defaults to 0.20,0.21,...,0.80.")
-    p.add_argument("--ensemble-min-sensitivity", type=float, default=0.83)
-    p.add_argument("--ensemble-objective", choices=["max_spec_with_sens_constraint", "max_f1", "max_balanced_accuracy"], default="max_spec_with_sens_constraint")
     p.add_argument("--force", action="store_true")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--cpu", action="store_true")
@@ -131,225 +122,6 @@ def write_summary_csv(path, summary):
             )
 
 
-def fmt_metric(value):
-    return "nan" if value is None or np.isnan(value) else f"{value:.3f}"
-
-
-def format_binary_metrics(metrics):
-    return (
-        f"acc={fmt_metric(metrics.get('accuracy'))} "
-        f"f1={fmt_metric(metrics.get('f1'))} "
-        f"auc={fmt_metric(metrics.get('auc'))} "
-        f"sens={fmt_metric(metrics.get('sensitivity'))} "
-        f"spec={fmt_metric(metrics.get('specificity'))} "
-        f"bal_acc={fmt_metric(metrics.get('balanced_accuracy'))} "
-        f"cm={metrics.get('confusion_matrix')}"
-    )
-
-
-def binary_metrics(y_true, score, threshold):
-    y_true = np.asarray(y_true, dtype=np.int64)
-    score = np.asarray(score, dtype=np.float64)
-    pred = (score >= threshold).astype(np.int64)
-    tn, fp, fn, tp = confusion_matrix(y_true, pred, labels=[0, 1]).ravel()
-    try:
-        auc = float(roc_auc_score(y_true, score))
-    except ValueError:
-        auc = float("nan")
-    sensitivity = float(tp / (tp + fn)) if (tp + fn) else float("nan")
-    specificity = float(tn / (tn + fp)) if (tn + fp) else float("nan")
-    return {
-        "accuracy": float(accuracy_score(y_true, pred)),
-        "f1": float(f1_score(y_true, pred, zero_division=0)),
-        "auc": auc,
-        "sensitivity": sensitivity,
-        "specificity": specificity,
-        "balanced_accuracy": float((sensitivity + specificity) / 2.0),
-        "tn": int(tn),
-        "fp": int(fp),
-        "fn": int(fn),
-        "tp": int(tp),
-        "confusion_matrix": [[int(tn), int(fp)], [int(fn), int(tp)]],
-    }
-
-
-def metric_key(metrics, objective):
-    if objective == "max_spec_with_sens_constraint":
-        return (metrics["specificity"], metrics["f1"], metrics["balanced_accuracy"])
-    if objective == "max_f1":
-        return (metrics["f1"], metrics["balanced_accuracy"], metrics["specificity"])
-    if objective == "max_balanced_accuracy":
-        return (metrics["balanced_accuracy"], metrics["f1"], metrics["specificity"])
-    raise ValueError(f"Unknown objective: {objective}")
-
-
-def tune_ensemble(p_binary, p_multi, y_true, betas, thresholds, min_sensitivity, objective):
-    best = None
-    current_min_sensitivity = min_sensitivity
-    while best is None and current_min_sensitivity >= 0:
-        for beta in betas:
-            score = beta * p_binary + (1.0 - beta) * p_multi
-            for threshold in thresholds:
-                metrics = binary_metrics(y_true, score, threshold)
-                if objective == "max_spec_with_sens_constraint" and metrics["sensitivity"] < current_min_sensitivity:
-                    continue
-                candidate = {
-                    "beta": float(beta),
-                    "threshold": float(threshold),
-                    "min_sensitivity": float(current_min_sensitivity),
-                    "metrics": metrics,
-                    "key": metric_key(metrics, objective),
-                }
-                if best is None or candidate["key"] > best["key"]:
-                    best = candidate
-        current_min_sensitivity -= 0.01
-    if best is None:
-        raise RuntimeError("Could not tune ensemble.")
-    best.pop("key", None)
-    return best
-
-
-def read_binary_predictions(path):
-    rows = {}
-    with open(path, "r", newline="", encoding="utf-8") as f:
-        for row in csv.DictReader(f):
-            item_id = row.get("id")
-            if not item_id:
-                continue
-            rows[item_id] = {
-                "y": int(row["true_binary_i63"]),
-                "score": float(row["prob_binary_i63"]),
-            }
-    return rows
-
-
-def align_predictions(binary_rows, multi_rows):
-    common_ids = sorted(set(binary_rows) & set(multi_rows))
-    if len(common_ids) != len(binary_rows) or len(common_ids) != len(multi_rows):
-        raise RuntimeError(
-            f"Prediction IDs do not align: binary={len(binary_rows)} multi={len(multi_rows)} common={len(common_ids)}"
-        )
-    y = np.array([binary_rows[item_id]["y"] for item_id in common_ids], dtype=np.int64)
-    y_multi = np.array([multi_rows[item_id]["y"] for item_id in common_ids], dtype=np.int64)
-    if not np.array_equal(y, y_multi):
-        raise RuntimeError("Binary and multiclass predictions disagree on true binary labels.")
-    p_binary = np.array([binary_rows[item_id]["score"] for item_id in common_ids], dtype=np.float64)
-    p_multi = np.array([multi_rows[item_id]["score"] for item_id in common_ids], dtype=np.float64)
-    return common_ids, y, p_binary, p_multi
-
-
-def parse_float_grid(value, default):
-    if value is None:
-        return np.array(default, dtype=np.float64)
-    return np.array([float(item.strip()) for item in str(value).split(",") if item.strip()], dtype=np.float64)
-
-
-def write_ensemble_predictions(path, ids, y_true, p_binary, p_multi, beta, threshold):
-    score = beta * p_binary + (1.0 - beta) * p_multi
-    pred = (score >= threshold).astype(np.int64)
-    with open(path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(
-            f,
-            fieldnames=["id", "true_binary_i63", "pred_binary_i63", "score_ensemble", "prob_binary_model", "prob_multiclass_model", "beta", "threshold"],
-        )
-        writer.writeheader()
-        for item_id, y, prediction, ens_score, binary_score, multi_score in zip(ids, y_true, pred, score, p_binary, p_multi):
-            writer.writerow(
-                {
-                    "id": item_id,
-                    "true_binary_i63": int(y),
-                    "pred_binary_i63": int(prediction),
-                    "score_ensemble": f"{ens_score:.6f}",
-                    "prob_binary_model": f"{binary_score:.6f}",
-                    "prob_multiclass_model": f"{multi_score:.6f}",
-                    "beta": f"{beta:.6f}",
-                    "threshold": f"{threshold:.6f}",
-                }
-            )
-
-
-def run_small_ensemble(output_dir, folds, mode, fixed_beta, fixed_threshold, betas, thresholds, min_sensitivity, objective):
-    ensemble_dir = output_dir / "small_ensemble"
-    ensemble_dir.mkdir(parents=True, exist_ok=True)
-    fold_rows = []
-    summary_rows = []
-
-    for fold in range(folds):
-        binary_dir = output_dir / "small_binary" / f"fold_{fold}"
-        multi_dir = output_dir / "small_multiclass" / f"fold_{fold}"
-        required = [
-            binary_dir / "val_predictions_best_auc.csv",
-            multi_dir / "val_predictions_best_auc.csv",
-            binary_dir / "test_predictions_best_auc.csv",
-            multi_dir / "test_predictions_best_auc.csv",
-        ]
-        missing = [str(path) for path in required if not path.exists()]
-        if missing:
-            print(f"Skip small ensemble: missing prediction files for fold {fold}.")
-            return None
-
-        val_ids, y_val, p_bin_val, p_multi_val = align_predictions(
-            read_binary_predictions(binary_dir / "val_predictions_best_auc.csv"),
-            read_binary_predictions(multi_dir / "val_predictions_best_auc.csv"),
-        )
-        test_ids, y_test, p_bin_test, p_multi_test = align_predictions(
-            read_binary_predictions(binary_dir / "test_predictions_best_auc.csv"),
-            read_binary_predictions(multi_dir / "test_predictions_best_auc.csv"),
-        )
-        if mode == "fixed":
-            beta = fixed_beta
-            threshold = fixed_threshold
-            val_score = beta * p_bin_val + (1.0 - beta) * p_multi_val
-            best = {
-                "mode": "fixed",
-                "beta": float(beta),
-                "threshold": float(threshold),
-                "metrics": binary_metrics(y_val, val_score, threshold),
-            }
-        else:
-            best = tune_ensemble(p_bin_val, p_multi_val, y_val, betas, thresholds, min_sensitivity, objective)
-            best["mode"] = "tuned"
-            beta = best["beta"]
-            threshold = best["threshold"]
-        test_score = beta * p_bin_test + (1.0 - beta) * p_multi_test
-        test_metrics = binary_metrics(y_test, test_score, threshold)
-
-        fold_dir = ensemble_dir / f"fold_{fold}"
-        fold_dir.mkdir(parents=True, exist_ok=True)
-        write_ensemble_predictions(fold_dir / "test_predictions_ensemble.csv", test_ids, y_test, p_bin_test, p_multi_test, beta, threshold)
-        with open(fold_dir / "metrics.json", "w", encoding="utf-8") as f:
-            json.dump({"selected": best, "test": test_metrics}, f, ensure_ascii=False, indent=2)
-
-        row = {
-            "fold": fold,
-            "selected.mode": best["mode"],
-            "selected.beta": beta,
-            "selected.threshold": threshold,
-            "selected.val_sensitivity": best["metrics"]["sensitivity"],
-            "selected.val_specificity": best["metrics"]["specificity"],
-        }
-        for key, value in test_metrics.items():
-            row[f"test.{key}"] = value
-        fold_rows.append(row)
-
-        flattened = {}
-        flatten_numeric("selected", best, flattened)
-        flatten_numeric("test", test_metrics, flattened)
-        summary_rows.append(flattened)
-
-    summary = summarize_metric_rows(summary_rows)
-    with open(ensemble_dir / "summary_5fold.json", "w", encoding="utf-8") as f:
-        json.dump(summary, f, ensure_ascii=False, indent=2)
-    write_summary_csv(ensemble_dir / "summary_5fold.csv", summary)
-    with open(ensemble_dir / "fold_settings.csv", "w", newline="", encoding="utf-8") as f:
-        fieldnames = sorted(set().union(*(row.keys() for row in fold_rows)))
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(fold_rows)
-    print_key_summary("small_ensemble", summary)
-    return summary
-
-
 def print_key_summary(name, summary):
     keys = [
         "test.accuracy",
@@ -378,7 +150,6 @@ def print_key_summary(name, summary):
             stats = summary[key]
             print(f"{key}: {stats['mean']:.3f} ± {stats['std']:.3f}")
     for key in [
-        "selected.beta",
         "selected.threshold",
         "selected.val.sensitivity",
         "selected.val.specificity",
@@ -423,7 +194,7 @@ def collect_model_report(output_dir, folder, folds):
         metrics = extract_test_binary_metrics(data)
         row = {f"test.{key}": value for key, value in metrics.items() if isinstance(value, (int, float)) and not isinstance(value, bool)}
         selected = data.get("selected", {})
-        for key in ("beta", "threshold"):
+        for key in ("threshold",):
             if key in selected:
                 row[f"selected.{key}"] = float(selected[key])
         if "val" in data:
@@ -488,7 +259,6 @@ def print_final_small_report(output_dir, args):
     model_folders = [
         ("small_binary", "small_binary"),
         ("small_multiclass_to_binary", "small_multiclass"),
-        ("small_ensemble", "small_ensemble"),
     ]
     reports = {}
     for display_name, folder in model_folders:
@@ -669,21 +439,6 @@ def main():
         if not args.dry_run:
             aggregate_experiment(output_dir, experiment["name"], args.folds)
 
-    selected_names = {experiment["name"] for experiment in experiments}
-    if not args.dry_run and not args.no_ensemble and {"small_binary", "small_multiclass"}.issubset(selected_names):
-        betas = parse_float_grid(args.ensemble_betas, np.arange(0.0, 1.0001, 0.05))
-        thresholds = parse_float_grid(args.ensemble_thresholds, np.arange(0.20, 0.8001, 0.01))
-        run_small_ensemble(
-            output_dir,
-            args.folds,
-            args.ensemble_mode,
-            args.ensemble_beta,
-            args.ensemble_threshold,
-            betas,
-            thresholds,
-            args.ensemble_min_sensitivity,
-            args.ensemble_objective,
-        )
     if not args.dry_run:
         print_final_small_report(output_dir, args)
 
