@@ -31,7 +31,7 @@ Class 2: DISTANT_OTHER
 
 ```bash
 python train_text.py \
-  --data /kaggle/input/datasets/duongb/cthsis \
+  --data /kaggle/input/datasets/duongbui/siscth \
   --format excel \
   --excel-task multiclass \
   --out /kaggle/working/text_excel_multiclass
@@ -41,7 +41,7 @@ Binary training uses `co`/`khong` inferred from each Excel filename:
 
 ```bash
 python train_text.py \
-  --data /kaggle/input/datasets/duongb/cthsis \
+  --data /kaggle/input/datasets/duongbui/siscth \
   --format excel \
   --excel-task binary \
   --out /kaggle/working/text_excel_binary
@@ -59,7 +59,7 @@ The default auxiliary weight is `--lambda-aux 0.5`:
 
 ```bash
 python train_text.py \
-  --data /kaggle/input/datasets/duongb/cthsis \
+  --data /kaggle/input/datasets/duongbui/siscth \
   --format excel \
   --excel-task multitask \
   --lambda-aux 0.5 \
@@ -93,7 +93,7 @@ python run_excel_5fold.py
 By default this currently runs only the small binary field-aware attention experiment:
 
 ```text
-small_binary       /kaggle/input/datasets/duongb/cthsis/700_co_label.xlsx + /kaggle/input/datasets/duongb/cthsis/700_khong_label.xlsx, target from filename co/khong
+small_binary       /kaggle/input/datasets/duongbui/siscth/700_co_label.xlsx + /kaggle/input/datasets/duongbui/siscth/700_khong_label.xlsx, target from filename co/khong
 pooling            attention
 input_mode         field
 ```
@@ -191,11 +191,11 @@ compact threshold sweep tables for small_binary and small_multiclass
 For the Kaggle `sis` input folder that contains:
 
 ```text
-/kaggle/input/datasets/duongb/cthsis/sis/large/train/I63_INFARCTION.csv
-/kaggle/input/datasets/duongb/cthsis/sis/large/train/G45_TIA.csv
-/kaggle/input/datasets/duongb/cthsis/sis/large/val/I63_INFARCTION.csv
-/kaggle/input/datasets/duongb/cthsis/sis/large/test/I63_INFARCTION.csv
-/kaggle/input/datasets/duongb/cthsis/sis/small/train/I63_INFARCTION.csv
+/kaggle/input/datasets/duongbui/siscth/sis/large/train/I63_INFARCTION.csv
+/kaggle/input/datasets/duongbui/siscth/sis/large/train/G45_TIA.csv
+/kaggle/input/datasets/duongbui/siscth/sis/large/val/I63_INFARCTION.csv
+/kaggle/input/datasets/duongbui/siscth/sis/large/test/I63_INFARCTION.csv
+/kaggle/input/datasets/duongbui/siscth/sis/small/train/I63_INFARCTION.csv
 ...
 ```
 
@@ -268,7 +268,7 @@ Evaluate the large text checkpoint directly on the small test split:
 python scripts/eval_text_checkpoint.py \
   --checkpoint /path/to/large_text/best_auc_phobert \
   --dataset small \
-  --small /kaggle/input/datasets/duongb/cthsis/sis/small \
+  --small /kaggle/input/datasets/duongbui/siscth/sis/small \
   --out /kaggle/working/sis_runs/03_cross_test/large_on_small_test
 ```
 
@@ -278,7 +278,7 @@ Evaluate the small text checkpoint directly on the large test split:
 python scripts/eval_text_checkpoint.py \
   --checkpoint /path/to/small_text/best_auc_phobert \
   --dataset large \
-  --texts /kaggle/input/datasets/duongb/cthsis/sis/large \
+  --texts /kaggle/input/datasets/duongbui/siscth/sis/large \
   --out /kaggle/working/sis_runs/03_cross_test/small_on_large_test
 ```
 
@@ -327,8 +327,8 @@ otherwise the script falls back to the base PhoBERT model from `--model`:
 ```bash
 python scripts/plot_text_tsne.py \
   --checkpoint /kaggle/working/sis_runs/01_large_text_ce/best_auc_phobert \
-  --texts /kaggle/input/datasets/duongb/cthsis/data/texts \
-  --images /kaggle/input/datasets/duongb/cthsis/data/images \
+  --texts /kaggle/input/datasets/duongbui/siscth/data/texts \
+  --images /kaggle/input/datasets/duongbui/siscth/data/images \
   --out /kaggle/working/sis_runs/04_text_tsne
 ```
 
@@ -357,8 +357,8 @@ Compute class-wise centroid distances for large vs paired text embeddings:
 ```bash
 python scripts/text_centroid_distance.py \
   --checkpoint /kaggle/working/sis_runs/01_large_text_ce/best_auc_phobert \
-  --texts /kaggle/input/datasets/duongb/cthsis/data/texts \
-  --images /kaggle/input/datasets/duongb/cthsis/data/images \
+  --texts /kaggle/input/datasets/duongbui/siscth/data/texts \
+  --images /kaggle/input/datasets/duongbui/siscth/data/images \
   --out /kaggle/working/sis_runs/05_text_centroids
 ```
 

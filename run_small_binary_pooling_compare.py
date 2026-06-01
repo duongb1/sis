@@ -34,7 +34,7 @@ VARIANTS = [
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Compare small binary CLS, token attention pooling, and field-aware attention with 5-fold protocol.")
-    parser.add_argument("--excel-root", default="/kaggle/input/datasets/duongb/cthsis")
+    parser.add_argument("--excel-root", default="/kaggle/input/datasets/duongbui/siscth")
     parser.add_argument("--output-dir", default="/kaggle/working/sis_excel_5fold_compare")
     parser.add_argument("--model", default="vinai/phobert-base")
     parser.add_argument("--epochs", type=int, default=8)

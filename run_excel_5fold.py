@@ -10,7 +10,7 @@ import numpy as np
 
 
 ROOT = Path(__file__).resolve().parent
-DEFAULT_EXCEL_ROOT = "/kaggle/input/datasets/duongb/cthsis"
+DEFAULT_EXCEL_ROOT = "/kaggle/input/datasets/duongbui/siscth"
 
 
 EXPERIMENTS = [
