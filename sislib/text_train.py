@@ -90,7 +90,11 @@ class FieldAwarePhoBERTClassifier(nn.Module):
             dropout=dropout,
             batch_first=True,
         )
-        self.field_transformer = nn.TransformerEncoder(encoder_layer, num_layers=field_transformer_layers)
+        self.field_transformer = nn.TransformerEncoder(
+            encoder_layer,
+            num_layers=field_transformer_layers,
+            enable_nested_tensor=False,
+        )
         self.field_attn = nn.Sequential(
             nn.Linear(hidden_size, hidden_size),
             nn.Tanh(),
