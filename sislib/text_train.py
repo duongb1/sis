@@ -8,15 +8,70 @@ from .common import batch_to_device, unwrap
 from .metrics import cls_metrics
 
 
-class PhoBERTMultiTask(nn.Module):
+class AttentionPooling(nn.Module):
+    def __init__(self, hidden_size: int, dropout: float = 0.1):
+        super().__init__()
+        self.proj = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size),
+            nn.Tanh(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_size, 1),
+        )
+
+    def forward(self, hidden_states, attention_mask):
+        scores = self.proj(hidden_states).squeeze(-1)
+        scores = scores.masked_fill(attention_mask == 0, -1e9)
+        weights = torch.softmax(scores, dim=-1)
+        pooled = torch.sum(hidden_states * weights.unsqueeze(-1), dim=1)
+        return pooled, weights
+
+
+class PhoBERTClassifier(nn.Module):
     base_model_prefix = "encoder"
 
-    def __init__(self, model_name="vinai/phobert-base", dropout=0.1):
+    def __init__(self, model_name="vinai/phobert-base", num_labels=2, dropout=0.1, pooling="attention"):
         super().__init__()
         from transformers import AutoModel
 
+        if pooling not in {"cls", "attention"}:
+            raise ValueError(f"Unsupported pooling method: {pooling}")
         self.encoder = AutoModel.from_pretrained(model_name)
         hidden_size = self.encoder.config.hidden_size
+        self.pooling = pooling
+        self.attn_pool = AttentionPooling(hidden_size, dropout=dropout) if pooling == "attention" else None
+        self.dropout = nn.Dropout(dropout)
+        self.classifier = nn.Linear(hidden_size, num_labels)
+        self.config = self.encoder.config
+        self.config.num_labels = num_labels
+
+    def forward(self, input_ids=None, attention_mask=None, token_type_ids=None, labels=None, **kwargs):
+        model_inputs = {"input_ids": input_ids, "attention_mask": attention_mask}
+        if token_type_ids is not None:
+            model_inputs["token_type_ids"] = token_type_ids
+        outputs = self.encoder(**model_inputs)
+        hidden = outputs.last_hidden_state
+        if self.pooling == "attention":
+            pooled, attn_weights = self.attn_pool(hidden, attention_mask)
+        else:
+            pooled, attn_weights = hidden[:, 0], None
+        logits = self.classifier(self.dropout(pooled))
+        loss = F.cross_entropy(logits, labels) if labels is not None else None
+        return {"loss": loss, "logits": logits, "attn_weights": attn_weights}
+
+
+class PhoBERTMultiTask(nn.Module):
+    base_model_prefix = "encoder"
+
+    def __init__(self, model_name="vinai/phobert-base", dropout=0.1, pooling="cls"):
+        super().__init__()
+        from transformers import AutoModel
+
+        if pooling not in {"cls", "attention"}:
+            raise ValueError(f"Unsupported pooling method: {pooling}")
+        self.encoder = AutoModel.from_pretrained(model_name)
+        hidden_size = self.encoder.config.hidden_size
+        self.pooling = pooling
+        self.attn_pool = AttentionPooling(hidden_size, dropout=dropout) if pooling == "attention" else None
         self.dropout = nn.Dropout(dropout)
         self.binary_head = nn.Linear(hidden_size, 2)
         self.aux_head = nn.Linear(hidden_size, 3)
@@ -27,7 +82,12 @@ class PhoBERTMultiTask(nn.Module):
         if token_type_ids is not None:
             model_inputs["token_type_ids"] = token_type_ids
         outputs = self.encoder(**model_inputs)
-        pooled = self.dropout(outputs.last_hidden_state[:, 0])
+        hidden = outputs.last_hidden_state
+        if self.pooling == "attention":
+            pooled, attn_weights = self.attn_pool(hidden, attention_mask)
+        else:
+            pooled, attn_weights = hidden[:, 0], None
+        pooled = self.dropout(pooled)
         binary_logits = self.binary_head(pooled)
         aux_logits = self.aux_head(pooled)
         loss = None
@@ -40,11 +100,26 @@ class PhoBERTMultiTask(nn.Module):
             "logits": binary_logits,
             "binary_logits": binary_logits,
             "aux_logits": aux_logits,
+            "attn_weights": attn_weights,
         }
 
 
+def _output_loss(outputs):
+    if isinstance(outputs, dict):
+        return outputs.get("loss")
+    return outputs.loss
+
+
+def _output_logits(outputs):
+    if isinstance(outputs, dict):
+        return outputs["logits"]
+    return outputs.logits
+
+
 def hf_loss(outputs, labels):
-    loss = outputs.loss if outputs.loss is not None else F.cross_entropy(outputs.logits, labels)
+    loss = _output_loss(outputs)
+    logits = _output_logits(outputs)
+    loss = loss if loss is not None else F.cross_entropy(logits, labels)
     return loss.mean()
 
 
@@ -108,7 +183,7 @@ def eval_text(model, loader, device, threshold=0.5, desc="Evaluating", label_nam
         labels = inputs["labels"]
         outputs = model(**inputs)
         loss = hf_loss(outputs, labels)
-        probs = torch.softmax(outputs.logits, dim=-1)
+        probs = torch.softmax(_output_logits(outputs), dim=-1)
         bs = labels.size(0)
         total_loss += loss.item() * bs
         total_count += bs

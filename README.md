@@ -68,6 +68,13 @@ python train_text.py \
 
 Excel input is split into train/val/test with stratified ratios controlled by `--val-ratio` and `--test-ratio` (both default to `0.1`).
 
+Pooling methods:
+
+```text
+cls         Use the default first-token representation path.
+attention   Learn token-level attention pooling over PhoBERT hidden states before classification.
+```
+
 ## Excel 5-Fold Protocol
 
 Run the small-set experiments with 5 folds, where each fold uses 70% train, 10% validation, and 20% test:
@@ -90,6 +97,16 @@ Outputs are written to `/kaggle/working/sis_excel_5fold/<experiment>/fold_<0-4>/
 
 ```bash
 python run_excel_5fold.py --dry-run
+```
+
+To run attention pooling without overwriting the default CLS-pooling results, use a separate output directory:
+
+```bash
+python run_excel_5fold.py \
+  --only small_binary \
+  --pooling attention \
+  --output-dir /kaggle/working/sis_excel_5fold_attnpool_binary \
+  --force
 ```
 
 For multi-class checkpoints, `binary_i63` is evaluated by thresholding `P(I63_INFARCTION)` rather than by checking whether the 4-class argmax is `I63_INFARCTION`. The default 5-fold runner writes a binary threshold sweep for:

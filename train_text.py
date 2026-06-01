@@ -27,7 +27,7 @@ from sislib.text_data import (
     parse_labels_arg,
     save_records,
 )
-from sislib.text_train import PhoBERTMultiTask, ce_epoch, eval_multitask, eval_text, multitask_epoch
+from sislib.text_train import PhoBERTClassifier, PhoBERTMultiTask, ce_epoch, eval_multitask, eval_text, multitask_epoch
 
 
 def parse_args():
@@ -54,6 +54,7 @@ def parse_args():
     p.add_argument("--threshold", type=float, default=0.5)
     p.add_argument("--thresholds", default=None, help="Comma-separated thresholds for binary_positive_label metrics, e.g. 0.30,0.35,0.40,0.45,0.50.")
     p.add_argument("--lambda-aux", type=float, default=0.5, help="Auxiliary 3-class loss weight for --excel-task multitask.")
+    p.add_argument("--pooling", choices=["cls", "attention"], default="cls", help="Pooling method after PhoBERT encoder. cls keeps the default classifier path; attention learns token-level attention pooling.")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--workers", type=int, default=0)
     p.add_argument("--accum", type=int, default=1)
@@ -86,6 +87,7 @@ def save_model(model, tokenizer, path, epoch, metrics, args, max_len, labels, la
                 "label_to_id": label_to_id,
                 "id_to_label": {str(index): label for index, label in enumerate(labels)},
                 "binary_positive_label": args.binary_positive_label,
+                "pooling": args.pooling,
                 "split_strategy": args.split_strategy,
                 "n_folds": args.n_folds,
                 "fold_index": args.fold_index,
@@ -99,15 +101,15 @@ def save_model(model, tokenizer, path, epoch, metrics, args, max_len, labels, la
         )
 
 
-def save_multitask_model(model, tokenizer, path, epoch, metrics, args, max_len, labels, label_to_id, aux_labels):
+def save_state_dict_model(model, tokenizer, path, epoch, metrics, args, max_len, labels, label_to_id, aux_labels=None, best_model_metric="auc"):
     path.mkdir(parents=True, exist_ok=True)
     torch.save(unwrap(model).state_dict(), path / "model.pt")
     tokenizer.save_pretrained(path)
+    aux_labels = list(aux_labels or [])
     with open(path / "training_info.json", "w", encoding="utf-8") as f:
-        json.dump(
-            {
+        info = {
                 "epoch": epoch,
-                "best_model_metric": "primary_binary_auc",
+                "best_model_metric": best_model_metric,
                 "val_metrics": round_metrics(metrics),
                 "text_model_name": args.model,
                 "max_length": max_len,
@@ -115,22 +117,25 @@ def save_multitask_model(model, tokenizer, path, epoch, metrics, args, max_len, 
                 "labels": labels,
                 "label_to_id": label_to_id,
                 "id_to_label": {str(index): label for index, label in enumerate(labels)},
-                "aux_labels": aux_labels,
-                "aux_label_to_id": {label: index for index, label in enumerate(aux_labels)},
-                "aux_id_to_label": {str(index): label for index, label in enumerate(aux_labels)},
                 "binary_positive_label": args.binary_positive_label,
-                "lambda_aux": args.lambda_aux,
+                "pooling": args.pooling,
                 "split_strategy": args.split_strategy,
                 "n_folds": args.n_folds,
                 "fold_index": args.fold_index,
                 "excel_split_label": args.excel_split_label,
                 "val_ratio": args.val_ratio,
                 "test_ratio": args.test_ratio,
-            },
-            f,
-            ensure_ascii=False,
-            indent=2,
-        )
+        }
+        if aux_labels:
+            info.update(
+                {
+                    "aux_labels": aux_labels,
+                    "aux_label_to_id": {label: index for index, label in enumerate(aux_labels)},
+                    "aux_id_to_label": {str(index): label for index, label in enumerate(aux_labels)},
+                    "lambda_aux": args.lambda_aux,
+                }
+            )
+        json.dump(info, f, ensure_ascii=False, indent=2)
 
 
 def main():
@@ -177,9 +182,12 @@ def main():
     device = get_device(args.cpu)
     tokenizer = AutoTokenizer.from_pretrained(args.model, use_fast=False)
     is_multitask = use_excel and args.excel_task == "multitask"
+    use_attention_classifier = args.pooling == "attention" and not is_multitask
     aux_labels = list(EXCEL_MULTICLASS_LABELS)
     if is_multitask:
-        model = PhoBERTMultiTask(args.model)
+        model = PhoBERTMultiTask(args.model, pooling=args.pooling)
+    elif use_attention_classifier:
+        model = PhoBERTClassifier(args.model, num_labels=len(labels), pooling=args.pooling)
     else:
         model = AutoModelForSequenceClassification.from_pretrained(
             args.model,
@@ -196,6 +204,7 @@ def main():
     if is_multitask:
         print(f"Aux labels ({len(aux_labels)}): {', '.join(aux_labels)}")
         print(f"Multi-task loss: loss = loss_binary + {args.lambda_aux:g} * loss_aux")
+    print(f"Pooling: {args.pooling}")
     print(f"Text samples: {len(records)} | Train: {len(train_rows)} | Val: {len(val_rows)} | Test: {len(test_rows)}")
 
     train_loader = DataLoader(TextDataset(train_rows, tokenizer, max_len), batch_size=args.batch, shuffle=True, num_workers=args.workers, pin_memory=device.type == "cuda")
@@ -255,9 +264,22 @@ def main():
         if val_score > best:
             best = val_score
             if is_multitask:
-                save_multitask_model(model, tokenizer, best_dir, epoch, val_metrics, args, max_len, labels, label_to_id, aux_labels)
+                save_state_dict_model(model, tokenizer, best_dir, epoch, val_metrics, args, max_len, labels, label_to_id, aux_labels, best_model_metric="primary_binary_auc")
                 save_preds(out / "val_predictions_best_auc.csv", val_ids, val_y, val_p, val_pred, "id", label_names=labels, binary_positive_label=args.binary_positive_label, threshold=args.threshold)
                 save_preds(out / "val_aux_predictions_best_auc.csv", val_ids, val_aux_y, val_aux_p, val_aux_pred, "id", label_names=aux_labels, binary_positive_label=args.binary_positive_label, threshold=args.threshold)
+            elif use_attention_classifier:
+                save_state_dict_model(model, tokenizer, best_dir, epoch, val_metrics, args, max_len, labels, label_to_id, best_model_metric="auc")
+                save_preds(
+                    out / "val_predictions_best_auc.csv",
+                    val_ids,
+                    val_y,
+                    val_p,
+                    val_pred,
+                    "id",
+                    label_names=labels,
+                    binary_positive_label=args.binary_positive_label,
+                    threshold=args.threshold,
+                )
             else:
                 save_model(model, tokenizer, best_dir, epoch, val_metrics, args, max_len, labels, label_to_id)
                 save_preds(
@@ -279,7 +301,12 @@ def main():
     save_records(out / "dataset_records.csv", records)
 
     if is_multitask:
-        eval_model = PhoBERTMultiTask(args.model)
+        eval_model = PhoBERTMultiTask(args.model, pooling=args.pooling)
+        resolve_max_len(eval_model, max_len)
+        eval_model.load_state_dict(torch.load(best_dir / "model.pt", map_location="cpu"))
+        eval_model = to_device(eval_model, device, not args.no_mgpu)
+    elif use_attention_classifier:
+        eval_model = PhoBERTClassifier(args.model, num_labels=len(labels), pooling=args.pooling)
         resolve_max_len(eval_model, max_len)
         eval_model.load_state_dict(torch.load(best_dir / "model.pt", map_location="cpu"))
         eval_model = to_device(eval_model, device, not args.no_mgpu)
