@@ -70,11 +70,6 @@ def parse_args():
     p.add_argument("--ensemble-thresholds", default=None, help="Comma-separated threshold grid. Defaults to 0.20,0.21,...,0.80.")
     p.add_argument("--ensemble-min-sensitivity", type=float, default=0.83)
     p.add_argument("--ensemble-objective", choices=["max_spec_with_sens_constraint", "max_f1", "max_balanced_accuracy"], default="max_spec_with_sens_constraint")
-    p.add_argument("--no-risk-score", action="store_true", help="Do not run small_multiclass I63-oriented risk score after folds finish.")
-    p.add_argument("--risk-alphas", default="0.00,0.05,0.10,0.15,0.20,0.30")
-    p.add_argument("--risk-thresholds", default="0.30,0.35,0.40,0.45,0.50,0.55")
-    p.add_argument("--risk-min-sensitivity", type=float, default=0.80)
-    p.add_argument("--risk-objective", choices=["max_spec_with_sens_constraint", "max_f1", "max_balanced_accuracy"], default="max_spec_with_sens_constraint")
     p.add_argument("--force", action="store_true")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--cpu", action="store_true")
@@ -152,16 +147,6 @@ def format_binary_metrics(metrics):
     )
 
 
-def print_risk_fold_summary(fold, alpha, threshold, objective, val_metrics, test_metrics):
-    print(
-        f"risk_score fold {fold}: alpha={alpha:.2f}, threshold={threshold:.2f}, "
-        f"objective={objective}"
-    )
-    print("formula: P(I63_INFARCTION) + alpha * P(OTHER_CEREBROVASCULAR)")
-    print(f"val:  {format_binary_metrics(val_metrics)}")
-    print(f"test: {format_binary_metrics(test_metrics)}")
-
-
 def binary_metrics(y_true, score, threshold):
     y_true = np.asarray(y_true, dtype=np.int64)
     score = np.asarray(score, dtype=np.float64)
@@ -224,32 +209,6 @@ def tune_ensemble(p_binary, p_multi, y_true, betas, thresholds, min_sensitivity,
     return best
 
 
-def tune_risk_score(p_i63, p_other_cbv, y_true, alphas, thresholds, min_sensitivity, objective):
-    best = None
-    current_min_sensitivity = min_sensitivity
-    while best is None and current_min_sensitivity >= 0:
-        for alpha in alphas:
-            score = p_i63 + alpha * p_other_cbv
-            for threshold in thresholds:
-                metrics = binary_metrics(y_true, score, threshold)
-                if objective == "max_spec_with_sens_constraint" and metrics["sensitivity"] < current_min_sensitivity:
-                    continue
-                candidate = {
-                    "alpha": float(alpha),
-                    "threshold": float(threshold),
-                    "min_sensitivity": float(current_min_sensitivity),
-                    "metrics": metrics,
-                    "key": metric_key(metrics, objective),
-                }
-                if best is None or candidate["key"] > best["key"]:
-                    best = candidate
-        current_min_sensitivity -= 0.01
-    if best is None:
-        raise RuntimeError("Could not tune risk score.")
-    best.pop("key", None)
-    return best
-
-
 def read_binary_predictions(path):
     rows = {}
     with open(path, "r", newline="", encoding="utf-8") as f:
@@ -262,29 +221,6 @@ def read_binary_predictions(path):
                 "score": float(row["prob_binary_i63"]),
             }
     return rows
-
-
-def read_risk_predictions(path):
-    rows = {}
-    with open(path, "r", newline="", encoding="utf-8") as f:
-        for row in csv.DictReader(f):
-            item_id = row.get("id")
-            if not item_id:
-                continue
-            rows[item_id] = {
-                "y": int(row["true_binary_i63"]),
-                "p_i63": float(row["prob_I63_INFARCTION"]),
-                "p_other_cbv": float(row["prob_OTHER_CEREBROVASCULAR"]),
-            }
-    return rows
-
-
-def align_risk_predictions(rows):
-    ids = sorted(rows)
-    y = np.array([rows[item_id]["y"] for item_id in ids], dtype=np.int64)
-    p_i63 = np.array([rows[item_id]["p_i63"] for item_id in ids], dtype=np.float64)
-    p_other_cbv = np.array([rows[item_id]["p_other_cbv"] for item_id in ids], dtype=np.float64)
-    return ids, y, p_i63, p_other_cbv
 
 
 def align_predictions(binary_rows, multi_rows):
@@ -327,39 +263,6 @@ def write_ensemble_predictions(path, ids, y_true, p_binary, p_multi, beta, thres
                     "prob_binary_model": f"{binary_score:.6f}",
                     "prob_multiclass_model": f"{multi_score:.6f}",
                     "beta": f"{beta:.6f}",
-                    "threshold": f"{threshold:.6f}",
-                }
-            )
-
-
-def write_risk_predictions(path, ids, y_true, p_i63, p_other_cbv, alpha, threshold):
-    score = p_i63 + alpha * p_other_cbv
-    pred = (score >= threshold).astype(np.int64)
-    with open(path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(
-            f,
-            fieldnames=[
-                "id",
-                "true_binary_i63",
-                "pred_binary_i63",
-                "risk_score",
-                "prob_I63_INFARCTION",
-                "prob_OTHER_CEREBROVASCULAR",
-                "alpha",
-                "threshold",
-            ],
-        )
-        writer.writeheader()
-        for item_id, y, prediction, risk_score, i63_score, other_score in zip(ids, y_true, pred, score, p_i63, p_other_cbv):
-            writer.writerow(
-                {
-                    "id": item_id,
-                    "true_binary_i63": int(y),
-                    "pred_binary_i63": int(prediction),
-                    "risk_score": f"{risk_score:.6f}",
-                    "prob_I63_INFARCTION": f"{i63_score:.6f}",
-                    "prob_OTHER_CEREBROVASCULAR": f"{other_score:.6f}",
-                    "alpha": f"{alpha:.6f}",
                     "threshold": f"{threshold:.6f}",
                 }
             )
@@ -447,102 +350,6 @@ def run_small_ensemble(output_dir, folds, mode, fixed_beta, fixed_threshold, bet
     return summary
 
 
-def run_small_risk_score(output_dir, folds, alphas, thresholds, min_sensitivity, objective):
-    risk_dir = output_dir / "small_risk_score"
-    risk_dir.mkdir(parents=True, exist_ok=True)
-    fold_rows = []
-    summary_rows = []
-
-    for fold in range(folds):
-        multi_dir = output_dir / "small_multiclass" / f"fold_{fold}"
-        required = [
-            multi_dir / "val_predictions_best_auc.csv",
-            multi_dir / "test_predictions_best_auc.csv",
-        ]
-        missing = [str(path) for path in required if not path.exists()]
-        if missing:
-            print(f"Skip small risk score: missing prediction files for fold {fold}.")
-            return None
-
-        val_ids, y_val, p_i63_val, p_other_val = align_risk_predictions(
-            read_risk_predictions(multi_dir / "val_predictions_best_auc.csv")
-        )
-        test_ids, y_test, p_i63_test, p_other_test = align_risk_predictions(
-            read_risk_predictions(multi_dir / "test_predictions_best_auc.csv")
-        )
-        best = tune_risk_score(p_i63_val, p_other_val, y_val, alphas, thresholds, min_sensitivity, objective)
-        alpha = best["alpha"]
-        threshold = best["threshold"]
-        test_score = p_i63_test + alpha * p_other_test
-        test_metrics = binary_metrics(y_test, test_score, threshold)
-        val_metrics = best["metrics"]
-        print_risk_fold_summary(fold, alpha, threshold, objective, val_metrics, test_metrics)
-
-        fold_dir = risk_dir / f"fold_{fold}"
-        fold_dir.mkdir(parents=True, exist_ok=True)
-        write_risk_predictions(fold_dir / "test_predictions_risk_score.csv", test_ids, y_test, p_i63_test, p_other_test, alpha, threshold)
-        with open(fold_dir / "metrics.json", "w", encoding="utf-8") as f:
-            json.dump(
-                {
-                    "formula": "P(I63_INFARCTION) + alpha * P(OTHER_CEREBROVASCULAR)",
-                    "selection_objective": objective,
-                    "selected": best,
-                    "val": val_metrics,
-                    "test": test_metrics,
-                },
-                f,
-                ensure_ascii=False,
-                indent=2,
-            )
-
-        row = {
-            "fold": fold,
-            "selection_objective": objective,
-            "selected.alpha": alpha,
-            "selected.threshold": threshold,
-            "selected.val_sensitivity": val_metrics["sensitivity"],
-            "selected.val_specificity": val_metrics["specificity"],
-            "selected.val_balanced_accuracy": val_metrics["balanced_accuracy"],
-        }
-        for key, value in val_metrics.items():
-            row[f"val.{key}"] = value
-        for key, value in test_metrics.items():
-            row[f"test.{key}"] = value
-        fold_rows.append(row)
-
-        flattened = {}
-        flatten_numeric("selected", {"alpha": alpha, "threshold": threshold}, flattened)
-        flatten_numeric("selected.val", val_metrics, flattened)
-        flatten_numeric("val", val_metrics, flattened)
-        flatten_numeric("test", test_metrics, flattened)
-        summary_rows.append(flattened)
-
-    summary = summarize_metric_rows(summary_rows)
-    totals = {
-        "total_tn": int(sum(row["test.tn"] for row in fold_rows)),
-        "total_fp": int(sum(row["test.fp"] for row in fold_rows)),
-        "total_fn": int(sum(row["test.fn"] for row in fold_rows)),
-        "total_tp": int(sum(row["test.tp"] for row in fold_rows)),
-    }
-    with open(risk_dir / "summary_5fold.json", "w", encoding="utf-8") as f:
-        json.dump({"metrics": summary, "aggregate_confusion_counts": totals}, f, ensure_ascii=False, indent=2)
-    with open(risk_dir / "aggregate_confusion_counts.json", "w", encoding="utf-8") as f:
-        json.dump(totals, f, ensure_ascii=False, indent=2)
-    write_summary_csv(risk_dir / "summary_5fold.csv", summary)
-    with open(risk_dir / "fold_settings.csv", "w", newline="", encoding="utf-8") as f:
-        fieldnames = sorted(set().union(*(row.keys() for row in fold_rows)))
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(fold_rows)
-    print_key_summary("small_risk_score", summary)
-    print(
-        "small_risk_score aggregate confusion counts: "
-        f"total_tn={totals['total_tn']} total_fp={totals['total_fp']} "
-        f"total_fn={totals['total_fn']} total_tp={totals['total_tp']}"
-    )
-    return summary
-
-
 def print_key_summary(name, summary):
     keys = [
         "test.accuracy",
@@ -571,7 +378,6 @@ def print_key_summary(name, summary):
             stats = summary[key]
             print(f"{key}: {stats['mean']:.3f} ± {stats['std']:.3f}")
     for key in [
-        "selected.alpha",
         "selected.beta",
         "selected.threshold",
         "selected.val.sensitivity",
@@ -617,7 +423,7 @@ def collect_model_report(output_dir, folder, folds):
         metrics = extract_test_binary_metrics(data)
         row = {f"test.{key}": value for key, value in metrics.items() if isinstance(value, (int, float)) and not isinstance(value, bool)}
         selected = data.get("selected", {})
-        for key in ("alpha", "beta", "threshold"):
+        for key in ("beta", "threshold"):
             if key in selected:
                 row[f"selected.{key}"] = float(selected[key])
         if "val" in data:
@@ -682,7 +488,6 @@ def print_final_small_report(output_dir, args):
     model_folders = [
         ("small_binary", "small_binary"),
         ("small_multiclass_to_binary", "small_multiclass"),
-        ("small_risk_score", "small_risk_score"),
         ("small_ensemble", "small_ensemble"),
     ]
     reports = {}
@@ -721,24 +526,6 @@ def print_final_small_report(output_dir, args):
                 continue
             counts = report["counts"]
             print(f"{name:<29} FP {counts['fp'] - baseline['fp']:+d}, FN {counts['fn'] - baseline['fn']:+d}")
-
-    risk = reports.get("small_risk_score")
-    if risk:
-        print("\nRisk score setting:")
-        print("formula: P(I63_INFARCTION) + alpha * P(OTHER_CEREBROVASCULAR)")
-        print(f"objective: {args.risk_objective}")
-        print(f"constraint: val_sensitivity >= {args.risk_min_sensitivity:.2f}")
-        print(f"alpha_grid: [{', '.join(f'{x:.2f}' for x in parse_float_grid(args.risk_alphas, None))}]")
-        print(f"threshold_grid: [{', '.join(f'{x:.2f}' for x in parse_float_grid(args.risk_thresholds, None))}]")
-        summary = risk["summary"]
-        for key in [
-            "selected.alpha",
-            "selected.threshold",
-            "selected.val.sensitivity",
-            "selected.val.specificity",
-            "selected.val.balanced_accuracy",
-        ]:
-            print(f"{key}: {mean_std_text(summary, key)}")
 
     print("\nBest metrics:")
     for label, key in [
@@ -896,17 +683,6 @@ def main():
             thresholds,
             args.ensemble_min_sensitivity,
             args.ensemble_objective,
-        )
-    if not args.dry_run and not args.no_risk_score and "small_multiclass" in selected_names:
-        alphas = parse_float_grid(args.risk_alphas, None)
-        thresholds = parse_float_grid(args.risk_thresholds, None)
-        run_small_risk_score(
-            output_dir,
-            args.folds,
-            alphas,
-            thresholds,
-            args.risk_min_sensitivity,
-            args.risk_objective,
         )
     if not args.dry_run:
         print_final_small_report(output_dir, args)
