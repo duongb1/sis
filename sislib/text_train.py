@@ -68,6 +68,7 @@ class FieldAwarePhoBERTClassifier(nn.Module):
         num_labels=2,
         num_fields=6,
         dropout=0.1,
+        pooling="attention",
         field_transformer_layers=1,
         field_transformer_heads=8,
         field_ffn_dim=1024,
@@ -75,8 +76,12 @@ class FieldAwarePhoBERTClassifier(nn.Module):
         super().__init__()
         from transformers import AutoModel
 
+        if pooling not in {"cls", "attention"}:
+            raise ValueError(f"Unsupported pooling method: {pooling}")
         self.encoder = AutoModel.from_pretrained(model_name)
         hidden_size = self.encoder.config.hidden_size
+        self.pooling = pooling
+        self.attn_pool = AttentionPooling(hidden_size, dropout=dropout) if pooling == "attention" else None
         self.field_embeddings = nn.Embedding(num_fields, hidden_size)
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=hidden_size,
@@ -112,7 +117,11 @@ class FieldAwarePhoBERTClassifier(nn.Module):
         flat_input_ids = input_ids.reshape(batch_size * num_fields, seq_len)
         flat_attention_mask = attention_mask.reshape(batch_size * num_fields, seq_len)
         outputs = self.encoder(input_ids=flat_input_ids, attention_mask=flat_attention_mask)
-        field_repr = outputs.last_hidden_state[:, 0].reshape(batch_size, num_fields, -1)
+        if self.pooling == "attention":
+            flat_repr, _ = self.attn_pool(outputs.last_hidden_state, flat_attention_mask)
+        else:
+            flat_repr = outputs.last_hidden_state[:, 0]
+        field_repr = flat_repr.reshape(batch_size, num_fields, -1)
 
         field_ids = torch.arange(num_fields, device=input_ids.device).unsqueeze(0).expand(batch_size, num_fields)
         field_repr = field_repr + self.field_embeddings(field_ids)
