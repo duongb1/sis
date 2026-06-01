@@ -166,6 +166,8 @@ def discover_excel_labels(data, task="multiclass"):
     if task == "binary":
         found = {_label_from_excel_filename(path) for path in _excel_paths(data)}
         return [label for label in sorted(found, key=lambda item: LABEL_TO_ID[item])]
+    if task == "multitask":
+        return ["non_i63", "I63_INFARCTION"]
     labels = set()
     for path in _excel_paths(data):
         df = _read_excel(path)
@@ -209,9 +211,17 @@ def collect_excel_text(
             row_dict = row.to_dict()
             raw_multiclass_label = _clean_cell(row_dict.get("LABEL"))
             multiclass_label = _excel_multiclass_label(raw_multiclass_label)
-            label_name = binary_label_name if task == "binary" else multiclass_label
+            if task == "binary":
+                label_name = binary_label_name
+            elif task == "multitask":
+                label_name = "I63_INFARCTION" if multiclass_label == "I63_INFARCTION" else "non_i63"
+            else:
+                label_name = multiclass_label
             if not label_name:
                 skipped.append(f"{path}:{index + 2}:missing_label")
+                continue
+            if task == "multitask" and multiclass_label not in EXCEL_MULTICLASS_LABELS:
+                skipped.append(f"{path}:{index + 2}:unknown_aux_label:{raw_multiclass_label}")
                 continue
             if label_name not in label_to_id:
                 skipped.append(f"{path}:{index + 2}:unknown_label:{label_name}")
@@ -220,21 +230,23 @@ def collect_excel_text(
             if not text:
                 skipped.append(f"{path}:{index + 2}:empty_text")
                 continue
-            records.append(
-                {
-                    "id": f"{path.stem}_{index + 2:06d}",
-                    "split": "",
-                    "label": label_to_id[label_name],
-                    "label_name": label_name,
-                    "text_path": str(path),
-                    "text": text,
-                    "source_file": path.name,
-                    "row_index": index + 2,
-                    "binary_label_name": binary_label_name,
-                    "multiclass_label_name": multiclass_label,
-                    "raw_multiclass_label_name": raw_multiclass_label,
-                }
-            )
+            record = {
+                "id": f"{path.stem}_{index + 2:06d}",
+                "split": "",
+                "label": label_to_id[label_name],
+                "label_name": label_name,
+                "text_path": str(path),
+                "text": text,
+                "source_file": path.name,
+                "row_index": index + 2,
+                "binary_label_name": binary_label_name,
+                "multiclass_label_name": multiclass_label,
+                "raw_multiclass_label_name": raw_multiclass_label,
+            }
+            if task == "multitask":
+                record["aux_label"] = EXCEL_MULTICLASS_LABELS.index(multiclass_label)
+                record["aux_label_name"] = multiclass_label
+            records.append(record)
     if split_strategy == "kfold":
         records = _split_excel_kfold(
             records,
@@ -410,12 +422,14 @@ class TextDataset(Dataset):
         item["labels"] = torch.tensor(row["label"], dtype=torch.long)
         if self.sample_weights is not None:
             item["sample_weight"] = torch.tensor(self.sample_weights[row["id"]], dtype=torch.float32)
+        if "aux_label" in row and row["aux_label"] != "":
+            item["aux_labels"] = torch.tensor(row["aux_label"], dtype=torch.long)
         item["id"] = row["id"]
         return item
 
 
 def save_records(path, records):
-    optional_fields = ["source_file", "row_index", "binary_label_name", "multiclass_label_name", "raw_multiclass_label_name", "fold"]
+    optional_fields = ["source_file", "row_index", "binary_label_name", "multiclass_label_name", "raw_multiclass_label_name", "aux_label", "aux_label_name", "fold"]
     fieldnames = ["id", "split", "label", "label_name", "text_path"]
     fieldnames.extend(field for field in optional_fields if any(field in row for row in records))
     with open(path, "w", newline="", encoding="utf-8") as f:

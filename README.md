@@ -47,6 +47,25 @@ python train_text.py \
   --out /kaggle/working/text_excel_binary
 ```
 
+Multi-task training uses one shared PhoBERT encoder with a primary binary head and an auxiliary 3-class head:
+
+```text
+primary binary head: non_i63 / I63_INFARCTION
+auxiliary head:      I63_INFARCTION / OTHER_STROKE_LIKE / DISTANT_OTHER
+loss:                loss_binary + lambda_aux * loss_aux
+```
+
+The default auxiliary weight is `--lambda-aux 0.5`:
+
+```bash
+python train_text.py \
+  --data /kaggle/input/datasets/duongb/cthsis \
+  --format excel \
+  --excel-task multitask \
+  --lambda-aux 0.5 \
+  --out /kaggle/working/text_excel_multitask
+```
+
 Excel input is split into train/val/test with stratified ratios controlled by `--val-ratio` and `--test-ratio` (both default to `0.1`).
 
 ## Excel 5-Fold Protocol
@@ -62,9 +81,10 @@ By default this currently runs only:
 ```text
 small_binary       /kaggle/input/datasets/duongb/cthsis/700_co_label.xlsx + /kaggle/input/datasets/duongb/cthsis/700_khong_label.xlsx, target from filename co/khong
 small_multiclass   /kaggle/input/datasets/duongb/cthsis/700_co_label.xlsx + /kaggle/input/datasets/duongb/cthsis/700_khong_label.xlsx, target from mapped 3-class LABEL
+small_multitask    /kaggle/input/datasets/duongb/cthsis/700_co_label.xlsx + /kaggle/input/datasets/duongb/cthsis/700_khong_label.xlsx, binary head + auxiliary 3-class head
 ```
 
-Use `--only all` to also run `large_binary` and `large_multiclass`.
+Use `--only all` to also run `large_binary`, `large_multiclass`, and `large_multitask`.
 
 Outputs are written to `/kaggle/working/sis_excel_5fold/<experiment>/fold_<0-4>/` by default. To check commands without training:
 
@@ -88,7 +108,7 @@ After all 5 folds finish for an experiment, the runner prints mean ± std and sa
 At the end, the runner prints a compact small-model report with:
 
 ```text
-5-fold summary table for small_binary, small_multiclass_to_binary
+5-fold summary table for small_binary, small_multiclass_to_binary, small_multitask
 aggregate confusion counts for every model
 FP/FN trade-off versus small_binary
 best model by F1, AUC, sensitivity, specificity, and balanced accuracy

@@ -16,6 +16,7 @@ from transformers import AutoModelForSequenceClassification, AutoTokenizer, get_
 from sislib.common import get_device, resolve_max_len, round_float, round_metrics, seed_all, split_records, to_device, unwrap
 from sislib.metrics import cls_metrics, format_metrics_summary, save_preds
 from sislib.text_data import (
+    EXCEL_MULTICLASS_LABELS,
     TextDataset,
     collect_excel_text,
     collect_large_text,
@@ -26,7 +27,7 @@ from sislib.text_data import (
     parse_labels_arg,
     save_records,
 )
-from sislib.text_train import ce_epoch, eval_text
+from sislib.text_train import PhoBERTMultiTask, ce_epoch, eval_multitask, eval_text, multitask_epoch
 
 
 def parse_args():
@@ -35,7 +36,7 @@ def parse_args():
     p.add_argument("--out", default="/kaggle/working/text_phobert_classifier")
     p.add_argument("--model", default="vinai/phobert-base")
     p.add_argument("--format", choices=["auto", "text", "excel"], default="auto", help="Input format. Excel accepts one .xlsx file, comma-separated .xlsx files, or a folder of .xlsx files.")
-    p.add_argument("--excel-task", choices=["multiclass", "binary"], default="multiclass", help="For Excel input, train on LABEL multi-class targets or co/khong targets inferred from filenames.")
+    p.add_argument("--excel-task", choices=["multiclass", "binary", "multitask"], default="multiclass", help="For Excel input, train on LABEL multi-class targets, co/khong binary targets, or binary + 3-class auxiliary multi-task targets.")
     p.add_argument("--val-ratio", type=float, default=0.1, help="Validation ratio for unsplit Excel input.")
     p.add_argument("--test-ratio", type=float, default=0.1, help="Test ratio for unsplit Excel input.")
     p.add_argument("--split-strategy", choices=["random", "kfold"], default="random", help="Excel split strategy. kfold uses one fold as 20% test when --n-folds 5.")
@@ -52,6 +53,7 @@ def parse_args():
     p.add_argument("--warmup", type=float, default=0.1)
     p.add_argument("--threshold", type=float, default=0.5)
     p.add_argument("--thresholds", default=None, help="Comma-separated thresholds for binary_positive_label metrics, e.g. 0.30,0.35,0.40,0.45,0.50.")
+    p.add_argument("--lambda-aux", type=float, default=0.5, help="Auxiliary 3-class loss weight for --excel-task multitask.")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--workers", type=int, default=0)
     p.add_argument("--accum", type=int, default=1)
@@ -84,6 +86,40 @@ def save_model(model, tokenizer, path, epoch, metrics, args, max_len, labels, la
                 "label_to_id": label_to_id,
                 "id_to_label": {str(index): label for index, label in enumerate(labels)},
                 "binary_positive_label": args.binary_positive_label,
+                "split_strategy": args.split_strategy,
+                "n_folds": args.n_folds,
+                "fold_index": args.fold_index,
+                "excel_split_label": args.excel_split_label,
+                "val_ratio": args.val_ratio,
+                "test_ratio": args.test_ratio,
+            },
+            f,
+            ensure_ascii=False,
+            indent=2,
+        )
+
+
+def save_multitask_model(model, tokenizer, path, epoch, metrics, args, max_len, labels, label_to_id, aux_labels):
+    path.mkdir(parents=True, exist_ok=True)
+    torch.save(unwrap(model).state_dict(), path / "model.pt")
+    tokenizer.save_pretrained(path)
+    with open(path / "training_info.json", "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "epoch": epoch,
+                "best_model_metric": "primary_binary_auc",
+                "val_metrics": round_metrics(metrics),
+                "text_model_name": args.model,
+                "max_length": max_len,
+                "num_labels": len(labels),
+                "labels": labels,
+                "label_to_id": label_to_id,
+                "id_to_label": {str(index): label for index, label in enumerate(labels)},
+                "aux_labels": aux_labels,
+                "aux_label_to_id": {label: index for index, label in enumerate(aux_labels)},
+                "aux_id_to_label": {str(index): label for index, label in enumerate(aux_labels)},
+                "binary_positive_label": args.binary_positive_label,
+                "lambda_aux": args.lambda_aux,
                 "split_strategy": args.split_strategy,
                 "n_folds": args.n_folds,
                 "fold_index": args.fold_index,
@@ -140,18 +176,26 @@ def main():
 
     device = get_device(args.cpu)
     tokenizer = AutoTokenizer.from_pretrained(args.model, use_fast=False)
-    model = AutoModelForSequenceClassification.from_pretrained(
-        args.model,
-        num_labels=len(labels),
-        id2label=id_to_label,
-        label2id=label_to_id,
-        ignore_mismatched_sizes=True,
-    )
+    is_multitask = use_excel and args.excel_task == "multitask"
+    aux_labels = list(EXCEL_MULTICLASS_LABELS)
+    if is_multitask:
+        model = PhoBERTMultiTask(args.model)
+    else:
+        model = AutoModelForSequenceClassification.from_pretrained(
+            args.model,
+            num_labels=len(labels),
+            id2label=id_to_label,
+            label2id=label_to_id,
+            ignore_mismatched_sizes=True,
+        )
     max_len = resolve_max_len(model, args.max_len)
     model = to_device(model, device, not args.no_mgpu)
 
     print(f"Data root: {data_root.resolve()}")
     print(f"Labels ({len(labels)}): {', '.join(labels)}")
+    if is_multitask:
+        print(f"Aux labels ({len(aux_labels)}): {', '.join(aux_labels)}")
+        print(f"Multi-task loss: loss = loss_binary + {args.lambda_aux:g} * loss_aux")
     print(f"Text samples: {len(records)} | Train: {len(train_rows)} | Val: {len(val_rows)} | Test: {len(test_rows)}")
 
     train_loader = DataLoader(TextDataset(train_rows, tokenizer, max_len), batch_size=args.batch, shuffle=True, num_workers=args.workers, pin_memory=device.type == "cuda")
@@ -165,47 +209,68 @@ def main():
 
     best, best_dir, history = -1.0, out / "best_auc_phobert", []
     for epoch in range(1, args.epochs + 1):
-        train_loss = ce_epoch(model, train_loader, opt, sched, scaler, device, args.accum)
-        val_metrics, val_ids, val_y, val_p, val_pred = eval_text(
-            model,
-            val_loader,
-            device,
-            args.threshold,
-            label_names=labels,
-            binary_positive_label=args.binary_positive_label,
-        )
-        val_score = val_metrics["auc"]
-        if np.isnan(val_score):
-            val_score = val_metrics["f1_macro"]
+        if is_multitask:
+            train_loss = multitask_epoch(model, train_loader, opt, sched, scaler, device, args.accum, args.lambda_aux)
+            val_metrics, val_ids, val_y, val_p, val_pred, val_aux_y, val_aux_p, val_aux_pred = eval_multitask(
+                model,
+                val_loader,
+                device,
+                args.threshold,
+                binary_label_names=labels,
+                aux_label_names=aux_labels,
+            )
+            primary_val = val_metrics["primary_binary"]
+            val_score = primary_val["auc"]
+            if np.isnan(val_score):
+                val_score = primary_val["f1_macro"]
+        else:
+            train_loss = ce_epoch(model, train_loader, opt, sched, scaler, device, args.accum)
+            val_metrics, val_ids, val_y, val_p, val_pred = eval_text(
+                model,
+                val_loader,
+                device,
+                args.threshold,
+                label_names=labels,
+                binary_positive_label=args.binary_positive_label,
+            )
+            primary_val = val_metrics
+            val_score = val_metrics["auc"]
+            if np.isnan(val_score):
+                val_score = val_metrics["f1_macro"]
         history.append({
             "epoch": epoch,
             "train_loss": round_float(train_loss),
-            "val_loss": round_float(val_metrics["loss"]),
-            "val_acc": round_float(val_metrics["accuracy"]),
-            "val_f1_macro": round_float(val_metrics["f1_macro"]),
-            "val_f1_weighted": round_float(val_metrics["f1_weighted"]),
-            "val_auc": round_float(val_metrics["auc"]),
+            "val_loss": round_float(primary_val["loss"]),
+            "val_acc": round_float(primary_val["accuracy"]),
+            "val_f1_macro": round_float(primary_val["f1_macro"]),
+            "val_f1_weighted": round_float(primary_val["f1_weighted"]),
+            "val_auc": round_float(primary_val["auc"]),
             "val_score": round_float(val_score),
         })
         print(
             f"Epoch {epoch:03d}/{args.epochs} | train_loss={train_loss:.3f} | "
-            f"val_loss={val_metrics['loss']:.3f} | val_acc={val_metrics['accuracy']:.3f} | "
-            f"val_f1_macro={val_metrics['f1_macro']:.3f} | val_auc={val_metrics['auc']:.3f}"
+            f"val_loss={primary_val['loss']:.3f} | val_acc={primary_val['accuracy']:.3f} | "
+            f"val_f1_macro={primary_val['f1_macro']:.3f} | val_auc={primary_val['auc']:.3f}"
         )
         if val_score > best:
             best = val_score
-            save_model(model, tokenizer, best_dir, epoch, val_metrics, args, max_len, labels, label_to_id)
-            save_preds(
-                out / "val_predictions_best_auc.csv",
-                val_ids,
-                val_y,
-                val_p,
-                val_pred,
-                "id",
-                label_names=labels,
-                binary_positive_label=args.binary_positive_label,
-                threshold=args.threshold,
-            )
+            if is_multitask:
+                save_multitask_model(model, tokenizer, best_dir, epoch, val_metrics, args, max_len, labels, label_to_id, aux_labels)
+                save_preds(out / "val_predictions_best_auc.csv", val_ids, val_y, val_p, val_pred, "id", label_names=labels, binary_positive_label=args.binary_positive_label, threshold=args.threshold)
+                save_preds(out / "val_aux_predictions_best_auc.csv", val_ids, val_aux_y, val_aux_p, val_aux_pred, "id", label_names=aux_labels, binary_positive_label=args.binary_positive_label, threshold=args.threshold)
+            else:
+                save_model(model, tokenizer, best_dir, epoch, val_metrics, args, max_len, labels, label_to_id)
+                save_preds(
+                    out / "val_predictions_best_auc.csv",
+                    val_ids,
+                    val_y,
+                    val_p,
+                    val_pred,
+                    "id",
+                    label_names=labels,
+                    binary_positive_label=args.binary_positive_label,
+                    threshold=args.threshold,
+                )
 
     with open(out / "training_history.csv", "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=list(history[0].keys()))
@@ -213,43 +278,68 @@ def main():
         writer.writerows(history)
     save_records(out / "dataset_records.csv", records)
 
-    eval_model = to_device(AutoModelForSequenceClassification.from_pretrained(best_dir), device, not args.no_mgpu)
+    if is_multitask:
+        eval_model = PhoBERTMultiTask(args.model)
+        resolve_max_len(eval_model, max_len)
+        eval_model.load_state_dict(torch.load(best_dir / "model.pt", map_location="cpu"))
+        eval_model = to_device(eval_model, device, not args.no_mgpu)
+    else:
+        eval_model = to_device(AutoModelForSequenceClassification.from_pretrained(best_dir), device, not args.no_mgpu)
     all_metrics, threshold_sweeps = {}, {}
     for split, loader in [("val", val_loader), ("test", test_loader)]:
         if loader is None:
             continue
-        metrics, ids, y, p, pred = eval_text(
-            eval_model,
-            loader,
-            device,
-            args.threshold,
-            label_names=labels,
-            binary_positive_label=args.binary_positive_label,
-        )
-        all_metrics[split] = round_metrics(metrics)
-        threshold_sweeps[split] = {}
-        for threshold in parse_thresholds(args.thresholds, args.threshold):
-            sweep_metrics = cls_metrics(
-                y,
-                p,
-                pred,
-                threshold=threshold,
+        if is_multitask:
+            metrics, ids, y, p, pred, aux_y, aux_p, aux_pred = eval_multitask(
+                eval_model,
+                loader,
+                device,
+                args.threshold,
+                binary_label_names=labels,
+                aux_label_names=aux_labels,
+            )
+            all_metrics[split] = round_metrics(metrics)
+            threshold_sweeps[split] = {}
+            for threshold in parse_thresholds(args.thresholds, args.threshold):
+                sweep_metrics = cls_metrics(y, p, pred, threshold=threshold, label_names=labels, binary_positive_label=args.binary_positive_label)
+                threshold_sweeps[split][str(threshold)] = round_metrics(sweep_metrics.get("binary_i63", sweep_metrics))
+            save_preds(out / f"{split}_predictions_best_auc.csv", ids, y, p, pred, "id", label_names=labels, binary_positive_label=args.binary_positive_label, threshold=args.threshold)
+            save_preds(out / f"{split}_aux_predictions_best_auc.csv", ids, aux_y, aux_p, aux_pred, "id", label_names=aux_labels, binary_positive_label=args.binary_positive_label, threshold=args.threshold)
+            print(format_metrics_summary(f"{split}.primary_binary", all_metrics[split]["primary_binary"]))
+            print(format_metrics_summary(f"{split}.aux_3class", all_metrics[split]["aux_3class"]))
+        else:
+            metrics, ids, y, p, pred = eval_text(
+                eval_model,
+                loader,
+                device,
+                args.threshold,
                 label_names=labels,
                 binary_positive_label=args.binary_positive_label,
             )
-            threshold_sweeps[split][str(threshold)] = round_metrics(sweep_metrics.get("binary_i63", sweep_metrics))
-        save_preds(
-            out / f"{split}_predictions_best_auc.csv",
-            ids,
-            y,
-            p,
-            pred,
-            "id",
-            label_names=labels,
-            binary_positive_label=args.binary_positive_label,
-            threshold=args.threshold,
-        )
-        print(format_metrics_summary(split, all_metrics[split]))
+            all_metrics[split] = round_metrics(metrics)
+            threshold_sweeps[split] = {}
+            for threshold in parse_thresholds(args.thresholds, args.threshold):
+                sweep_metrics = cls_metrics(
+                    y,
+                    p,
+                    pred,
+                    threshold=threshold,
+                    label_names=labels,
+                    binary_positive_label=args.binary_positive_label,
+                )
+                threshold_sweeps[split][str(threshold)] = round_metrics(sweep_metrics.get("binary_i63", sweep_metrics))
+            save_preds(
+                out / f"{split}_predictions_best_auc.csv",
+                ids,
+                y,
+                p,
+                pred,
+                "id",
+                label_names=labels,
+                binary_positive_label=args.binary_positive_label,
+                threshold=args.threshold,
+            )
+            print(format_metrics_summary(split, all_metrics[split]))
     with open(out / "metrics.json", "w", encoding="utf-8") as f:
         json.dump({**all_metrics, "binary_threshold_sweep": threshold_sweeps}, f, ensure_ascii=False, indent=2)
     print(f"Saved full metrics to {out / 'metrics.json'}")

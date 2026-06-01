@@ -33,9 +33,21 @@ EXPERIMENTS = [
         "positive": "I63_INFARCTION",
     },
     {
+        "name": "large_multitask",
+        "data": "9937_co_label.xlsx,9937_khong_label.xlsx",
+        "task": "multitask",
+        "positive": "I63_INFARCTION",
+    },
+    {
         "name": "small_multiclass",
         "data": "700_co_label.xlsx,700_khong_label.xlsx",
         "task": "multiclass",
+        "positive": "I63_INFARCTION",
+    },
+    {
+        "name": "small_multitask",
+        "data": "700_co_label.xlsx,700_khong_label.xlsx",
+        "task": "multitask",
         "positive": "I63_INFARCTION",
     },
 ]
@@ -60,7 +72,8 @@ def parse_args():
     p.add_argument("--folds", type=int, default=5)
     p.add_argument("--val-ratio", type=float, default=0.1)
     p.add_argument("--test-ratio", type=float, default=0.2, help="Documented protocol ratio. With 5 folds, test is one fold = 0.2.")
-    p.add_argument("--only", default="small_binary,small_multiclass", help="Comma-separated experiment names to run. Default runs only small_binary and small_multiclass. Use --only all to run every experiment.")
+    p.add_argument("--only", default="small_binary,small_multiclass,small_multitask", help="Comma-separated experiment names to run. Default runs only small_binary, small_multiclass, and small_multitask. Use --only all to run every experiment.")
+    p.add_argument("--lambda-aux", type=float, default=0.5, help="Auxiliary 3-class loss weight for multitask experiments.")
     p.add_argument("--force", action="store_true")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--cpu", action="store_true")
@@ -138,6 +151,15 @@ def print_key_summary(name, summary):
         "test.binary_i63.sensitivity",
         "test.binary_i63.specificity",
         "test.binary_i63.balanced_accuracy",
+        "test.primary_binary.accuracy",
+        "test.primary_binary.f1",
+        "test.primary_binary.auc",
+        "test.primary_binary.sensitivity",
+        "test.primary_binary.specificity",
+        "test.primary_binary.balanced_accuracy",
+        "test.aux_3class.accuracy",
+        "test.aux_3class.f1_macro",
+        "test.aux_3class.auc",
     ]
     print("\n" + "-" * 80)
     print(f"5-fold mean ± std: {name}")
@@ -171,6 +193,8 @@ def with_balanced_accuracy(metrics):
 
 def extract_test_binary_metrics(metrics):
     test = metrics.get("test", {})
+    if "primary_binary" in test:
+        return with_balanced_accuracy(test["primary_binary"])
     if "binary_i63" in test:
         return with_balanced_accuracy(test["binary_i63"])
     return with_balanced_accuracy(test)
@@ -259,6 +283,7 @@ def print_final_small_report(output_dir, args):
     model_folders = [
         ("small_binary", "small_binary"),
         ("small_multiclass_to_binary", "small_multiclass"),
+        ("small_multitask", "small_multitask"),
     ]
     reports = {}
     for display_name, folder in model_folders:
@@ -311,6 +336,7 @@ def print_final_small_report(output_dir, args):
 
     print_threshold_sweep_table(output_dir, "small_binary", args.folds)
     print_threshold_sweep_table(output_dir, "small_multiclass", args.folds)
+    print_threshold_sweep_table(output_dir, "small_multitask", args.folds)
 
 
 def aggregate_experiment(output_dir, experiment_name, folds):
@@ -409,6 +435,8 @@ def train_cmd(args, experiment, fold, out):
         "--workers",
         args.workers,
     ]
+    if experiment["task"] == "multitask":
+        cmd.extend(["--lambda-aux", args.lambda_aux])
     if args.cpu:
         cmd.append("--cpu")
     if args.no_mgpu:
