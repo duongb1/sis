@@ -52,6 +52,11 @@ EXPERIMENTS = [
     },
 ]
 
+EXPERIMENT_ALIASES = {
+    "large": {"large_binary", "large_multiclass", "large_multitask"},
+    "small": {"small_binary", "small_multiclass", "small_multitask"},
+}
+
 
 def parse_args():
     p = argparse.ArgumentParser(description="Run Excel SIS text training for large/small binary and multi-class with 5-fold 70/10/20 splits.")
@@ -77,7 +82,7 @@ def parse_args():
     p.add_argument("--val-ratio", type=float, default=0.1)
     p.add_argument("--test-ratio", type=float, default=0.2, help="Documented protocol ratio. With 5 folds, test is one fold = 0.2.")
     p.add_argument("--excel-split-label", choices=["target", "binary", "multiclass"], default="multiclass", help="Label source used only to stratify Excel kfold splits.")
-    p.add_argument("--only", default="small_binary", help="Comma-separated experiment names to run. Default runs small_binary. Use --only all to run every experiment.")
+    p.add_argument("--only", default="small_binary", help="Comma-separated experiment names to run. Use --only large for all large experiments, --only small for all small experiments, or --only all for every experiment.")
     p.add_argument("--lambda-aux", type=float, default=0.5, help="Auxiliary 3-class loss weight for multitask experiments.")
     p.add_argument("--force", action="store_true")
     p.add_argument("--dry-run", action="store_true")
@@ -89,10 +94,14 @@ def parse_args():
 def selected_experiments(value):
     if not value or value.strip().lower() == "all":
         return EXPERIMENTS
-    names = {item.strip() for item in value.split(",") if item.strip()}
+    requested = {item.strip() for item in value.split(",") if item.strip()}
+    names = set()
+    for item in requested:
+        names.update(EXPERIMENT_ALIASES.get(item.lower(), {item}))
     unknown = names - {experiment["name"] for experiment in EXPERIMENTS}
     if unknown:
-        raise ValueError(f"Unknown experiment names: {', '.join(sorted(unknown))}")
+        aliases = ", ".join(sorted(EXPERIMENT_ALIASES))
+        raise ValueError(f"Unknown experiment names: {', '.join(sorted(unknown))}. Available aliases: all, {aliases}")
     return [experiment for experiment in EXPERIMENTS if experiment["name"] in names]
 
 
@@ -393,6 +402,7 @@ def run_stage(name, cmd, done_path, force=False, dry_run=False):
 def train_cmd(args, experiment, fold, out):
     excel_root = args.excel_root.rstrip("/\\")
     data = ",".join(f"{excel_root}/{name}" for name in experiment["data"].split(","))
+    input_mode = "concat" if experiment["task"] == "multitask" and args.input_mode == "field" else args.input_mode
     cmd = [
         sys.executable,
         "train_text.py",
@@ -443,7 +453,7 @@ def train_cmd(args, experiment, fold, out):
         "--pooling",
         args.pooling,
         "--input-mode",
-        args.input_mode,
+        input_mode,
         "--max-len-per-field",
         args.max_len_per_field,
         "--workers",
@@ -469,6 +479,8 @@ def main():
     if args.folds != 5 or abs(args.test_ratio - 0.2) > 1e-9:
         print(f"Using {args.folds} folds: held-out test ratio is {1.0 / args.folds:.3f}; requested --test-ratio is recorded as {args.test_ratio}.")
     print(f"Excel kfold stratify label: {args.excel_split_label}")
+    if args.input_mode == "field" and any(experiment["task"] == "multitask" for experiment in selected_experiments(args.only)):
+        print("Note: multitask experiments use --input-mode concat because field mode is binary/multiclass only.")
 
     experiments = selected_experiments(args.only)
     for experiment in experiments:

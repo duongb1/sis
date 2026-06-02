@@ -99,7 +99,15 @@ input_mode         field
 split_stratify     multiclass LABEL
 ```
 
-Use `--only all` to also run `large_binary`, `large_multiclass`, `large_multitask`, `small_multiclass`, and `small_multitask`. Use `--input-mode concat --pooling cls` to reproduce the original concatenated CLS-pooling baseline.
+Use `--only large` to run all large Excel experiments in one command:
+
+```bash
+python run_excel_5fold.py --only large
+```
+
+This expands to `large_binary`, `large_multiclass`, and `large_multitask`. Use `--only small` for all small experiments, or `--only all` for every large and small experiment. Use `--input-mode concat --pooling cls` to reproduce the original concatenated CLS-pooling baseline.
+
+When the runner default is `--input-mode field`, multitask experiments automatically use `--input-mode concat` because field mode is supported only for binary and multiclass Excel tasks.
 
 For k-fold Excel runs, outer test folds and inner validation splits are stratified by the original multiclass label. This preserves the distribution of `I63_INFARCTION`, `OTHER_STROKE_LIKE`, and `DISTANT_OTHER` across train, validation, and test. Use `--excel-split-label binary` only to reproduce older binary-stratified results.
 
