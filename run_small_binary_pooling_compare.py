@@ -35,7 +35,7 @@ VARIANTS = [
 def parse_args():
     parser = argparse.ArgumentParser(description="Compare small binary CLS, token attention pooling, and field-aware attention with 5-fold protocol.")
     parser.add_argument("--excel-root", default="/kaggle/input/datasets/duongbui/siscth")
-    parser.add_argument("--output-dir", default="/kaggle/working/sis_excel_5fold_compare")
+    parser.add_argument("--output-dir", default="/kaggle/working/sis_excel_5fold_compare_mcstrat")
     parser.add_argument("--model", default="vinai/phobert-base")
     parser.add_argument("--epochs", type=int, default=8)
     parser.add_argument("--lr", type=float, default=2e-5)
@@ -54,6 +54,7 @@ def parse_args():
     parser.add_argument("--folds", type=int, default=5)
     parser.add_argument("--val-ratio", type=float, default=0.1)
     parser.add_argument("--test-ratio", type=float, default=0.2)
+    parser.add_argument("--excel-split-label", choices=["target", "binary", "multiclass"], default="multiclass")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--threshold", type=float, default=0.5)
     parser.add_argument("--thresholds", default="0.30,0.35,0.40,0.45,0.50")
@@ -124,6 +125,8 @@ def build_command(args, variant):
         args.val_ratio,
         "--test-ratio",
         args.test_ratio,
+        "--excel-split-label",
+        args.excel_split_label,
     ]
     if args.save_field_attention and variant["input_mode"] == "field":
         cmd.append("--save-field-attention")
@@ -227,6 +230,7 @@ def main():
     print("Dual T4 note: leave --no-mgpu unset. train_text.py will use torch.nn.DataParallel when two CUDA devices are visible.", flush=True)
     print(f"Concat variants: batch={args.concat_batch}, accum={args.concat_accum}", flush=True)
     print(f"Field-aware variant: batch={args.field_batch}, accum={args.field_accum}", flush=True)
+    print(f"Excel split stratify label: {args.excel_split_label}", flush=True)
 
     for variant in VARIANTS:
         print("\n" + "=" * 80, flush=True)

@@ -66,7 +66,7 @@ python train_text.py \
   --out /kaggle/working/text_excel_multitask
 ```
 
-Excel input is split into train/val/test with stratified ratios controlled by `--val-ratio` and `--test-ratio` (both default to `0.1`).
+Excel input is split into train/val/test with stratified ratios controlled by `--val-ratio` and `--test-ratio` (both default to `0.1` for random splits). For Excel k-fold runs, the default stratification label is the original multiclass `LABEL`, even when the task being trained is binary.
 
 Pooling methods:
 
@@ -96,11 +96,14 @@ By default this currently runs only the small binary field-aware attention exper
 small_binary       /kaggle/input/datasets/duongbui/siscth/700_co_label.xlsx + /kaggle/input/datasets/duongbui/siscth/700_khong_label.xlsx, target from filename co/khong
 pooling            attention
 input_mode         field
+split_stratify     multiclass LABEL
 ```
 
 Use `--only all` to also run `large_binary`, `large_multiclass`, `large_multitask`, `small_multiclass`, and `small_multitask`. Use `--input-mode concat --pooling cls` to reproduce the original concatenated CLS-pooling baseline.
 
-Outputs are written to `/kaggle/working/sis_excel_5fold_fieldaware_binary/<experiment>/fold_<0-4>/` by default. To check commands without training:
+For k-fold Excel runs, outer test folds and inner validation splits are stratified by the original multiclass label. This preserves the distribution of `I63_INFARCTION`, `OTHER_STROKE_LIKE`, and `DISTANT_OTHER` across train, validation, and test. Use `--excel-split-label binary` only to reproduce older binary-stratified results.
+
+Outputs are written to `/kaggle/working/sis_excel_5fold_fieldaware_binary_mcstrat/<experiment>/fold_<0-4>/` by default. To check commands without training:
 
 ```bash
 python run_excel_5fold.py --dry-run
@@ -126,7 +129,8 @@ python run_excel_5fold.py \
   --max-len-per-field 128 \
   --batch 8 \
   --accum 2 \
-  --output-dir /kaggle/working/sis_excel_5fold_fieldaware_binary \
+  --excel-split-label multiclass \
+  --output-dir /kaggle/working/sis_excel_5fold_fieldaware_binary_mcstrat \
   --force
 ```
 
@@ -160,7 +164,7 @@ python run_small_binary_pooling_compare.py --field-batch 4 --field-accum 4 --for
 The comparison summary is written to:
 
 ```text
-/kaggle/working/sis_excel_5fold_compare/summary_compare.csv
+/kaggle/working/sis_excel_5fold_compare_mcstrat/summary_compare.csv
 ```
 
 For multi-class checkpoints, `binary_i63` is evaluated by thresholding `P(I63_INFARCTION)` rather than by checking whether the 4-class argmax is `I63_INFARCTION`. The default 5-fold runner writes a binary threshold sweep for:

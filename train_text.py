@@ -1,6 +1,7 @@
 import argparse
 import csv
 import json
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
@@ -44,7 +45,7 @@ def parse_args():
     p.add_argument("--split-strategy", choices=["random", "kfold"], default="random", help="Excel split strategy. kfold uses one fold as 20% test when --n-folds 5.")
     p.add_argument("--n-folds", type=int, default=5, help="Number of folds for --split-strategy kfold.")
     p.add_argument("--fold-index", type=int, default=0, help="Zero-based held-out test fold for --split-strategy kfold.")
-    p.add_argument("--excel-split-label", choices=["target", "binary", "multiclass"], default="target", help="Label source used only to stratify Excel kfold splits.")
+    p.add_argument("--excel-split-label", choices=["target", "binary", "multiclass"], default="multiclass", help="Label source used only to stratify Excel kfold splits.")
     p.add_argument("--labels", default=None, help="Comma-separated class names. Defaults to CSV/file labels discovered under --data.")
     p.add_argument("--binary-positive-label", default=None, help="Class treated as positive for one-vs-rest binary metrics. Defaults to I63_INFARCTION, or co for --excel-task binary.")
     p.add_argument("--max-len", type=int, default=512)
@@ -169,6 +170,12 @@ def field_attention_rows(field_weights):
     return rows
 
 
+def label_distribution(rows, key):
+    counts = Counter(row.get(key, "") for row in rows)
+    counts.pop("", None)
+    return dict(sorted(counts.items()))
+
+
 def main():
     args = parse_args()
     seed_all(args.seed)
@@ -209,6 +216,10 @@ def main():
     train_rows, val_rows, test_rows = [split_records(records, s) for s in ("train", "val", "test")]
     if not train_rows or not val_rows:
         raise RuntimeError("Need non-empty train and val records.")
+    if use_excel:
+        print(f"Excel split stratify label: {args.excel_split_label}")
+        for split_name, rows in [("train", train_rows), ("val", val_rows), ("test", test_rows)]:
+            print(f"{split_name} multiclass distribution: {label_distribution(rows, 'multiclass_label_name')}")
     if args.input_mode == "field":
         if not use_excel:
             raise RuntimeError("--input-mode field is currently supported only for Excel input.")

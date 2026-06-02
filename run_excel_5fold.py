@@ -56,7 +56,7 @@ EXPERIMENTS = [
 def parse_args():
     p = argparse.ArgumentParser(description="Run Excel SIS text training for large/small binary and multi-class with 5-fold 70/10/20 splits.")
     p.add_argument("--excel-root", default=DEFAULT_EXCEL_ROOT, help="Folder containing the four Excel files.")
-    p.add_argument("--output-dir", default="/kaggle/working/sis_excel_5fold_fieldaware_binary")
+    p.add_argument("--output-dir", default="/kaggle/working/sis_excel_5fold_fieldaware_binary_mcstrat")
     p.add_argument("--model", default="vinai/phobert-base")
     p.add_argument("--epochs", type=int, default=8)
     p.add_argument("--batch", type=int, default=8)
@@ -79,6 +79,7 @@ def parse_args():
     p.add_argument("--folds", type=int, default=5)
     p.add_argument("--val-ratio", type=float, default=0.1)
     p.add_argument("--test-ratio", type=float, default=0.2, help="Documented protocol ratio. With 5 folds, test is one fold = 0.2.")
+    p.add_argument("--excel-split-label", choices=["target", "binary", "multiclass"], default="multiclass", help="Label source used only to stratify Excel kfold splits.")
     p.add_argument("--only", default="small_binary", help="Comma-separated experiment names to run. Default runs small_binary. Use --only all to run every experiment.")
     p.add_argument("--lambda-aux", type=float, default=0.5, help="Auxiliary 3-class loss weight for multitask experiments.")
     p.add_argument("--force", action="store_true")
@@ -415,7 +416,7 @@ def train_cmd(args, experiment, fold, out):
         "--fold-index",
         fold,
         "--excel-split-label",
-        "binary",
+        args.excel_split_label,
         "--val-ratio",
         args.val_ratio,
         "--test-ratio",
@@ -476,6 +477,7 @@ def main():
 
     if args.folds != 5 or abs(args.test_ratio - 0.2) > 1e-9:
         print(f"Using {args.folds} folds: held-out test ratio is {1.0 / args.folds:.3f}; requested --test-ratio is recorded as {args.test_ratio}.")
+    print(f"Excel kfold stratify label: {args.excel_split_label}")
 
     experiments = selected_experiments(args.only)
     for experiment in experiments:
