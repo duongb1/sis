@@ -170,6 +170,28 @@ The comparison summary is written to:
 /kaggle/working/sis_excel_5fold_default_compare_mcstrat/summary_compare.csv
 ```
 
+To run the default large-model comparison on Kaggle dual T4 16GB:
+
+```bash
+python run_large_model_compare.py
+```
+
+This runs the same 5-fold 70/10/20 protocol for:
+
+```text
+large_binary_cls
+large_multiclass_cls
+large_binary_attnpool
+large_multitask_cls_aux_0_5
+large_multitask_attnpool_aux_0_5
+```
+
+The comparison summary is written to:
+
+```text
+/kaggle/working/sis_excel_5fold_large_compare_mcstrat/summary_compare.csv
+```
+
 To compare PhoBERT attention-pooling multitask auxiliary weights for small binary I63 screening:
 
 ```bash
