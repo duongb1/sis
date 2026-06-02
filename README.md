@@ -134,37 +134,31 @@ python run_excel_5fold.py \
   --force
 ```
 
-To compare the three small binary variants on Kaggle dual T4 16GB:
+To run the default small-model comparison on Kaggle dual T4 16GB:
 
 ```bash
-python run_small_binary_pooling_compare.py --force
+python run_small_binary_pooling_compare.py
 ```
 
 This runs the same 5-fold 70/10/20 protocol for:
 
 ```text
-small_binary_cls          concat input + CLS pooling
-small_binary_attnpool     concat input + token attention pooling
-small_binary_fieldaware   per-field input + token attention + field attention pooling
+small_binary_cls                    binary task + CLS pooling
+small_multiclass_cls                multiclass task + CLS pooling, collapsed to binary_i63 for screening metrics
+small_binary_attnpool               binary task + token attention pooling
+small_multitask_attnpool_aux_0_5    binary head + auxiliary 3-class head, token attention pooling, lambda_aux=0.5
 ```
 
 The script leaves multi-GPU enabled by default, so `train_text.py` uses `torch.nn.DataParallel` when both T4 GPUs are visible. The default dual-T4 settings are:
 
 ```text
-CLS / attention pooling   batch=16, accum=1
-field-aware               batch=8, accum=2
-```
-
-If field-aware runs out of memory, retry with:
-
-```bash
-python run_small_binary_pooling_compare.py --field-batch 4 --field-accum 4 --force
+batch=16, accum=1
 ```
 
 The comparison summary is written to:
 
 ```text
-/kaggle/working/sis_excel_5fold_compare_mcstrat/summary_compare.csv
+/kaggle/working/sis_excel_5fold_default_compare_mcstrat/summary_compare.csv
 ```
 
 To compare PhoBERT attention-pooling multitask auxiliary weights for small binary I63 screening:

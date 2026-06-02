@@ -13,29 +13,43 @@ ROOT = Path(__file__).resolve().parent
 VARIANTS = [
     {
         "name": "small_binary_cls",
+        "experiment": "small_binary",
         "input_mode": "concat",
         "pooling": "cls",
-        "batch_kind": "concat",
+        "lambda_aux": None,
+        "metrics_folder": "small_binary",
+    },
+    {
+        "name": "small_multiclass_cls",
+        "experiment": "small_multiclass",
+        "input_mode": "concat",
+        "pooling": "cls",
+        "lambda_aux": None,
+        "metrics_folder": "small_multiclass",
     },
     {
         "name": "small_binary_attnpool",
+        "experiment": "small_binary",
         "input_mode": "concat",
         "pooling": "attention",
-        "batch_kind": "concat",
+        "lambda_aux": None,
+        "metrics_folder": "small_binary",
     },
     {
-        "name": "small_binary_fieldaware",
-        "input_mode": "field",
+        "name": "small_multitask_attnpool_aux_0_5",
+        "experiment": "small_multitask",
+        "input_mode": "concat",
         "pooling": "attention",
-        "batch_kind": "field",
+        "lambda_aux": 0.5,
+        "metrics_folder": "small_multitask",
     },
 ]
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Compare small binary CLS, token attention pooling, and field-aware attention with 5-fold protocol.")
+    parser = argparse.ArgumentParser(description="Compare default small SIS text models with the 5-fold mcstrat protocol.")
     parser.add_argument("--excel-root", default="/kaggle/input/datasets/duongbui/siscth")
-    parser.add_argument("--output-dir", default="/kaggle/working/sis_excel_5fold_compare_mcstrat")
+    parser.add_argument("--output-dir", default="/kaggle/working/sis_excel_5fold_default_compare_mcstrat")
     parser.add_argument("--model", default="vinai/phobert-base")
     parser.add_argument("--epochs", type=int, default=8)
     parser.add_argument("--lr", type=float, default=2e-5)
@@ -43,10 +57,8 @@ def parse_args():
     parser.add_argument("--warmup", type=float, default=0.1)
     parser.add_argument("--max-len", type=int, default=512)
     parser.add_argument("--max-len-per-field", type=int, default=128)
-    parser.add_argument("--concat-batch", type=int, default=16, help="Per-step batch for CLS and concat attention variants. DataParallel splits this across both T4 GPUs.")
-    parser.add_argument("--concat-accum", type=int, default=1)
-    parser.add_argument("--field-batch", type=int, default=8, help="Per-step batch for field-aware variant. Use 4 if dual T4 runs out of memory.")
-    parser.add_argument("--field-accum", type=int, default=2)
+    parser.add_argument("--batch", type=int, default=16, help="Per-step batch. DataParallel splits this across both T4 GPUs.")
+    parser.add_argument("--accum", type=int, default=1)
     parser.add_argument("--workers", type=int, default=0)
     parser.add_argument("--folds", type=int, default=5)
     parser.add_argument("--val-ratio", type=float, default=0.1)
@@ -63,14 +75,7 @@ def parse_args():
     return parser.parse_args()
 
 
-def variant_batch_args(args, variant):
-    if variant["batch_kind"] == "field":
-        return args.field_batch, args.field_accum
-    return args.concat_batch, args.concat_accum
-
-
 def build_command(args, variant):
-    batch, accum = variant_batch_args(args, variant)
     cmd = [
         sys.executable,
         "run_excel_5fold.py",
@@ -81,11 +86,11 @@ def build_command(args, variant):
         "--model",
         args.model,
         "--only",
-        "small_binary",
+        variant["experiment"],
         "--epochs",
         args.epochs,
         "--batch",
-        batch,
+        args.batch,
         "--lr",
         args.lr,
         "--wd",
@@ -95,7 +100,7 @@ def build_command(args, variant):
         "--max-len",
         args.max_len,
         "--accum",
-        accum,
+        args.accum,
         "--seed",
         args.seed,
         "--threshold",
@@ -121,6 +126,8 @@ def build_command(args, variant):
     ]
     if args.save_field_attention and variant["input_mode"] == "field":
         cmd.append("--save-field-attention")
+    if variant["lambda_aux"] is not None:
+        cmd.extend(["--lambda-aux", variant["lambda_aux"]])
     if args.force:
         cmd.append("--force")
     if args.dry_run:
@@ -141,6 +148,9 @@ def write_compare_summary(output_dir, reports):
     path = output_dir / "summary_compare.csv"
     fields = [
         "model",
+        "experiment",
+        "pooling",
+        "lambda_aux",
         "accuracy_mean",
         "accuracy_std",
         "f1_mean",
@@ -161,12 +171,15 @@ def write_compare_summary(output_dir, reports):
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fields)
         writer.writeheader()
-        for model_name, report in reports.items():
+        for model_name, (variant, report) in reports.items():
             summary = report["summary"]
             counts = report["counts"]
             writer.writerow(
                 {
                     "model": model_name,
+                    "experiment": variant["experiment"],
+                    "pooling": variant["pooling"],
+                    "lambda_aux": "" if variant["lambda_aux"] is None else f"{variant['lambda_aux']:g}",
                     "accuracy_mean": summary_value(summary, "test.accuracy", "mean"),
                     "accuracy_std": summary_value(summary, "test.accuracy", "std"),
                     "f1_mean": summary_value(summary, "test.f1", "mean"),
@@ -189,12 +202,12 @@ def write_compare_summary(output_dir, reports):
 
 
 def print_compare_table(reports):
-    print("\nModel                     Acc       F1        AUC       Sens      Spec      BalAcc    FP/FN")
-    for model_name, report in reports.items():
+    print("\nModel                              Acc       F1        AUC       Sens      Spec      BalAcc    FP/FN")
+    for model_name, (variant, report) in reports.items():
         summary = report["summary"]
         counts = report["counts"]
         print(
-            f"{model_name:<25} "
+            f"{model_name:<34} "
             f"{mean_std_text(summary, 'test.accuracy'):<9} "
             f"{mean_std_text(summary, 'test.f1'):<9} "
             f"{mean_std_text(summary, 'test.auc'):<9} "
@@ -218,9 +231,13 @@ def main():
     if not args.dry_run:
         output_dir.mkdir(parents=True, exist_ok=True)
 
+    print("Default comparison:", flush=True)
+    print("- small binary CLS", flush=True)
+    print("- small multi-class CLS", flush=True)
+    print("- PhoBERT + attention pooling + binary head", flush=True)
+    print("- PhoBERT-AttnPool-MTL, lambda=0.5", flush=True)
     print("Dual T4 note: leave --no-mgpu unset. train_text.py will use torch.nn.DataParallel when two CUDA devices are visible.", flush=True)
-    print(f"Concat variants: batch={args.concat_batch}, accum={args.concat_accum}", flush=True)
-    print(f"Field-aware variant: batch={args.field_batch}, accum={args.field_accum}", flush=True)
+    print(f"Batch={args.batch}, accum={args.accum}", flush=True)
     print(f"Excel split stratify label: {args.excel_split_label}", flush=True)
 
     for variant in VARIANTS:
@@ -235,10 +252,10 @@ def main():
 
     reports = {}
     for variant in VARIANTS:
-        report = collect_model_report(output_dir / variant["name"], "small_binary", args.folds)
+        report = collect_model_report(output_dir / variant["name"], variant["metrics_folder"], args.folds)
         if report is None:
             raise FileNotFoundError(f"Missing fold metrics for {variant['name']}")
-        reports[variant["name"]] = report
+        reports[variant["name"]] = (variant, report)
 
     summary_path = write_compare_summary(output_dir, reports)
     print_compare_table(reports)
