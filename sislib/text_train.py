@@ -59,52 +59,6 @@ class PhoBERTClassifier(nn.Module):
         return {"loss": loss, "logits": logits, "attn_weights": attn_weights}
 
 
-class FieldTransformerBlock(nn.Module):
-    def __init__(self, hidden_size, num_heads=8, ffn_dim=1024, dropout=0.1):
-        super().__init__()
-        if hidden_size % num_heads != 0:
-            raise ValueError(f"hidden_size={hidden_size} must be divisible by num_heads={num_heads}")
-        self.num_heads = num_heads
-        self.head_dim = hidden_size // num_heads
-        self.q_proj = nn.Linear(hidden_size, hidden_size)
-        self.k_proj = nn.Linear(hidden_size, hidden_size)
-        self.v_proj = nn.Linear(hidden_size, hidden_size)
-        self.out_proj = nn.Linear(hidden_size, hidden_size)
-        self.norm1 = nn.LayerNorm(hidden_size)
-        self.ffn = nn.Sequential(
-            nn.Linear(hidden_size, ffn_dim),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(ffn_dim, hidden_size),
-        )
-        self.norm2 = nn.LayerNorm(hidden_size)
-        self.dropout = nn.Dropout(dropout)
-
-    def _project_heads(self, projection, x):
-        batch_size, seq_len, hidden_size = x.shape
-        projected = projection(x)
-        return projected.reshape(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-
-    def _self_attention(self, x, key_padding_mask=None):
-        query = self._project_heads(self.q_proj, x)
-        key = self._project_heads(self.k_proj, x)
-        value = self._project_heads(self.v_proj, x)
-        scores = torch.matmul(query, key.transpose(-2, -1)) / (self.head_dim ** 0.5)
-        if key_padding_mask is not None:
-            scores = scores.masked_fill(key_padding_mask[:, None, None, :], torch.finfo(scores.dtype).min)
-        weights = torch.softmax(scores, dim=-1)
-        weights = self.dropout(weights)
-        context = torch.matmul(weights, value)
-        context = context.transpose(1, 2).contiguous().reshape(x.shape)
-        return self.out_proj(context)
-
-    def forward(self, x, key_padding_mask=None):
-        attn_out = self._self_attention(x, key_padding_mask=key_padding_mask)
-        x = self.norm1(x + self.dropout(attn_out))
-        ffn_out = self.ffn(x)
-        return self.norm2(x + self.dropout(ffn_out))
-
-
 class FieldAwarePhoBERTClassifier(nn.Module):
     base_model_prefix = "encoder"
 
@@ -115,9 +69,6 @@ class FieldAwarePhoBERTClassifier(nn.Module):
         num_fields=6,
         dropout=0.1,
         pooling="attention",
-        field_transformer_layers=1,
-        field_transformer_heads=8,
-        field_ffn_dim=1024,
     ):
         super().__init__()
         from transformers import AutoModel
@@ -129,17 +80,6 @@ class FieldAwarePhoBERTClassifier(nn.Module):
         self.pooling = pooling
         self.attn_pool = AttentionPooling(hidden_size, dropout=dropout) if pooling == "attention" else None
         self.field_embeddings = nn.Embedding(num_fields, hidden_size)
-        self.field_transformer = nn.ModuleList(
-            [
-                FieldTransformerBlock(
-                    hidden_size,
-                    num_heads=field_transformer_heads,
-                    ffn_dim=field_ffn_dim,
-                    dropout=dropout,
-                )
-                for _ in range(field_transformer_layers)
-            ]
-        )
         self.field_attn = nn.Sequential(
             nn.Linear(hidden_size, hidden_size),
             nn.Tanh(),
@@ -173,11 +113,7 @@ class FieldAwarePhoBERTClassifier(nn.Module):
         field_repr = flat_repr.reshape(batch_size, num_fields, -1)
 
         field_ids = torch.arange(num_fields, device=input_ids.device).unsqueeze(0).expand(batch_size, num_fields)
-        field_repr = field_repr + self.field_embeddings(field_ids)
-        field_padding_mask = field_mask == 0
-        field_context = field_repr
-        for layer in self.field_transformer:
-            field_context = layer(field_context, key_padding_mask=field_padding_mask)
+        field_context = field_repr + self.field_embeddings(field_ids)
 
         field_scores = self.field_attn(field_context).squeeze(-1)
         field_scores = field_scores.masked_fill(field_mask == 0, torch.finfo(field_scores.dtype).min)

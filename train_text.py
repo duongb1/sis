@@ -60,9 +60,6 @@ def parse_args():
     p.add_argument("--pooling", choices=["cls", "attention"], default="cls", help="Pooling method after PhoBERT encoder. cls keeps the default classifier path; attention learns token-level attention pooling.")
     p.add_argument("--input-mode", choices=["concat", "field"], default="concat", help="Input representation mode: concat all fields or encode Excel fields separately.")
     p.add_argument("--max-len-per-field", type=int, default=128, help="Maximum token length for each clinical field when --input-mode field.")
-    p.add_argument("--field-transformer-layers", type=int, default=1)
-    p.add_argument("--field-transformer-heads", type=int, default=8)
-    p.add_argument("--field-ffn-dim", type=int, default=1024)
     p.add_argument("--save-field-attention", action="store_true", help="Save field-level attention weights in field-aware prediction CSVs.")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--workers", type=int, default=0)
@@ -99,9 +96,6 @@ def save_model(model, tokenizer, path, epoch, metrics, args, max_len, labels, la
                 "pooling": args.pooling,
                 "input_mode": args.input_mode,
                 "max_len_per_field": args.max_len_per_field,
-                "field_transformer_layers": args.field_transformer_layers,
-                "field_transformer_heads": args.field_transformer_heads,
-                "field_ffn_dim": args.field_ffn_dim,
                 "split_strategy": args.split_strategy,
                 "n_folds": args.n_folds,
                 "fold_index": args.fold_index,
@@ -135,9 +129,6 @@ def save_state_dict_model(model, tokenizer, path, epoch, metrics, args, max_len,
                 "pooling": args.pooling,
                 "input_mode": args.input_mode,
                 "max_len_per_field": args.max_len_per_field,
-                "field_transformer_layers": args.field_transformer_layers,
-                "field_transformer_heads": args.field_transformer_heads,
-                "field_ffn_dim": args.field_ffn_dim,
                 "split_strategy": args.split_strategy,
                 "n_folds": args.n_folds,
                 "fold_index": args.fold_index,
@@ -238,9 +229,6 @@ def main():
             num_labels=len(labels),
             num_fields=len(EXCEL_TEXT_COLUMNS),
             pooling=args.pooling,
-            field_transformer_layers=args.field_transformer_layers,
-            field_transformer_heads=args.field_transformer_heads,
-            field_ffn_dim=args.field_ffn_dim,
         )
     elif is_multitask:
         model = PhoBERTMultiTask(args.model, pooling=args.pooling)
@@ -378,9 +366,6 @@ def main():
             num_labels=len(labels),
             num_fields=len(EXCEL_TEXT_COLUMNS),
             pooling=args.pooling,
-            field_transformer_layers=args.field_transformer_layers,
-            field_transformer_heads=args.field_transformer_heads,
-            field_ffn_dim=args.field_ffn_dim,
         )
         resolve_max_len(eval_model, max_len)
         eval_model.load_state_dict(torch.load(best_dir / "model.pt", map_location="cpu"))

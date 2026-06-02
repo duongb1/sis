@@ -79,7 +79,7 @@ Field-aware mode:
 
 ```text
 concat   Join all clinical fields into one sequence.
-field    Encode each clinical field separately with a shared PhoBERT encoder, then aggregate field representations with a lightweight Transformer and field attention pooling.
+field    Encode each clinical field separately with a shared PhoBERT encoder, then aggregate field representations with field attention pooling.
 ```
 
 ## Excel 5-Fold Protocol
@@ -145,7 +145,7 @@ This runs the same 5-fold 70/10/20 protocol for:
 ```text
 small_binary_cls          concat input + CLS pooling
 small_binary_attnpool     concat input + token attention pooling
-small_binary_fieldaware   per-field input + token attention + field Transformer attention
+small_binary_fieldaware   per-field input + token attention + field attention pooling
 ```
 
 The script leaves multi-GPU enabled by default, so `train_text.py` uses `torch.nn.DataParallel` when both T4 GPUs are visible. The default dual-T4 settings are:

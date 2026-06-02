@@ -43,9 +43,6 @@ def parse_args():
     parser.add_argument("--warmup", type=float, default=0.1)
     parser.add_argument("--max-len", type=int, default=512)
     parser.add_argument("--max-len-per-field", type=int, default=128)
-    parser.add_argument("--field-transformer-layers", type=int, default=1)
-    parser.add_argument("--field-transformer-heads", type=int, default=8)
-    parser.add_argument("--field-ffn-dim", type=int, default=1024)
     parser.add_argument("--concat-batch", type=int, default=16, help="Per-step batch for CLS and concat attention variants. DataParallel splits this across both T4 GPUs.")
     parser.add_argument("--concat-accum", type=int, default=1)
     parser.add_argument("--field-batch", type=int, default=8, help="Per-step batch for field-aware variant. Use 4 if dual T4 runs out of memory.")
@@ -111,12 +108,6 @@ def build_command(args, variant):
         variant["input_mode"],
         "--max-len-per-field",
         args.max_len_per_field,
-        "--field-transformer-layers",
-        args.field_transformer_layers,
-        "--field-transformer-heads",
-        args.field_transformer_heads,
-        "--field-ffn-dim",
-        args.field_ffn_dim,
         "--workers",
         args.workers,
         "--folds",

@@ -71,9 +71,6 @@ def parse_args():
     p.add_argument("--pooling", choices=["cls", "attention"], default="attention", help="Pooling method after PhoBERT encoder.")
     p.add_argument("--input-mode", choices=["concat", "field"], default="field", help="Input representation mode: concat all fields or encode Excel fields separately.")
     p.add_argument("--max-len-per-field", type=int, default=128)
-    p.add_argument("--field-transformer-layers", type=int, default=1)
-    p.add_argument("--field-transformer-heads", type=int, default=8)
-    p.add_argument("--field-ffn-dim", type=int, default=1024)
     p.add_argument("--save-field-attention", action="store_true", help="Save field-level attention weights in field-aware prediction CSVs.")
     p.add_argument("--workers", type=int, default=0)
     p.add_argument("--folds", type=int, default=5)
@@ -449,12 +446,6 @@ def train_cmd(args, experiment, fold, out):
         args.input_mode,
         "--max-len-per-field",
         args.max_len_per_field,
-        "--field-transformer-layers",
-        args.field_transformer_layers,
-        "--field-transformer-heads",
-        args.field_transformer_heads,
-        "--field-ffn-dim",
-        args.field_ffn_dim,
         "--workers",
         args.workers,
     ]
