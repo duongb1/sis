@@ -286,7 +286,7 @@ def eval_text(model, loader, device, threshold=0.5, desc="Evaluating", label_nam
 
 
 @torch.no_grad()
-def eval_multitask(model, loader, device, threshold=0.5, desc="Evaluating", binary_label_names=None, aux_label_names=None):
+def eval_multitask(model, loader, device, threshold=0.5, desc="Evaluating", binary_label_names=None, aux_label_names=None, lambda_aux=0.5):
     model.eval()
     total_loss, total_count = 0.0, 0
     ids, labels_all, aux_labels_all, binary_probs_all, aux_probs_all = [], [], [], [], []
@@ -295,7 +295,7 @@ def eval_multitask(model, loader, device, threshold=0.5, desc="Evaluating", bina
         inputs.pop("sample_weight", None)
         labels = inputs["labels"]
         aux_labels = inputs["aux_labels"]
-        outputs = model(**inputs)
+        outputs = model(**inputs, lambda_aux=lambda_aux)
         loss = outputs["loss"].mean()
         binary_probs = torch.softmax(outputs["binary_logits"], dim=-1)
         aux_probs = torch.softmax(outputs["aux_logits"], dim=-1)

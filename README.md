@@ -167,6 +167,33 @@ The comparison summary is written to:
 /kaggle/working/sis_excel_5fold_compare_mcstrat/summary_compare.csv
 ```
 
+To compare PhoBERT attention-pooling multitask auxiliary weights for small binary I63 screening:
+
+```bash
+python run_small_multitask_aux_compare.py
+```
+
+This trains:
+
+```text
+PhoBERT -> attention pooling -> shared vector
+binary head: non_i63 / I63_INFARCTION
+aux head: I63_INFARCTION / OTHER_STROKE_LIKE / DISTANT_OTHER
+loss = binary_loss + lambda_aux * aux_loss
+```
+
+The default auxiliary weights are:
+
+```text
+0.2, 0.3, 0.5
+```
+
+Checkpoint selection uses primary binary validation AUC, not the auxiliary 3-class metric. Inference and reported screening metrics use the binary head only. The runner writes:
+
+```text
+/kaggle/working/sis_excel_5fold_small_multitask_aux_mcstrat/summary_compare.csv
+```
+
 For multi-class checkpoints, `binary_i63` is evaluated by thresholding `P(I63_INFARCTION)` rather than by checking whether the 4-class argmax is `I63_INFARCTION`. The default 5-fold runner writes a binary threshold sweep for:
 
 ```text

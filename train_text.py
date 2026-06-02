@@ -275,6 +275,7 @@ def main():
                 args.threshold,
                 binary_label_names=labels,
                 aux_label_names=aux_labels,
+                lambda_aux=args.lambda_aux,
             )
             primary_val = val_metrics["primary_binary"]
             val_score = primary_val["auc"]
@@ -389,6 +390,7 @@ def main():
                 args.threshold,
                 binary_label_names=labels,
                 aux_label_names=aux_labels,
+                lambda_aux=args.lambda_aux,
             )
             all_metrics[split] = round_metrics(metrics)
             threshold_sweeps[split] = {}
@@ -447,8 +449,16 @@ def main():
                 extra_rows=field_attention_rows(field_weights) if is_field_aware and args.save_field_attention else None,
             )
             print(format_metrics_summary(split, all_metrics[split]))
+    metrics_payload = {**all_metrics, "binary_threshold_sweep": threshold_sweeps}
+    if is_multitask:
+        metrics_payload["selection"] = {
+            "checkpoint_metric": "primary_binary_auc",
+            "uses_auxiliary_metric_for_selection": False,
+            "inference_head": "primary_binary",
+            "lambda_aux": args.lambda_aux,
+        }
     with open(out / "metrics.json", "w", encoding="utf-8") as f:
-        json.dump({**all_metrics, "binary_threshold_sweep": threshold_sweeps}, f, ensure_ascii=False, indent=2)
+        json.dump(metrics_payload, f, ensure_ascii=False, indent=2)
     print(f"Saved full metrics to {out / 'metrics.json'}")
 
 
