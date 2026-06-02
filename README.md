@@ -146,6 +146,7 @@ This runs the same 5-fold 70/10/20 protocol for:
 small_binary_cls                    binary task + CLS pooling
 small_multiclass_cls                multiclass task + CLS pooling, collapsed to binary_i63 for screening metrics
 small_binary_attnpool               binary task + token attention pooling
+small_multitask_cls_aux_0_5         binary head + auxiliary 3-class head, CLS pooling, lambda_aux=0.5
 small_multitask_attnpool_aux_0_5    binary head + auxiliary 3-class head, token attention pooling, lambda_aux=0.5
 ```
 

@@ -36,6 +36,14 @@ VARIANTS = [
         "metrics_folder": "small_binary",
     },
     {
+        "name": "small_multitask_cls_aux_0_5",
+        "experiment": "small_multitask",
+        "input_mode": "concat",
+        "pooling": "cls",
+        "lambda_aux": 0.5,
+        "metrics_folder": "small_multitask",
+    },
+    {
         "name": "small_multitask_attnpool_aux_0_5",
         "experiment": "small_multitask",
         "input_mode": "concat",
@@ -235,6 +243,7 @@ def main():
     print("- small binary CLS", flush=True)
     print("- small multi-class CLS", flush=True)
     print("- PhoBERT + attention pooling + binary head", flush=True)
+    print("- PhoBERT-CLS-MTL, lambda=0.5", flush=True)
     print("- PhoBERT-AttnPool-MTL, lambda=0.5", flush=True)
     print("Dual T4 note: leave --no-mgpu unset. train_text.py will use torch.nn.DataParallel when two CUDA devices are visible.", flush=True)
     print(f"Batch={args.batch}, accum={args.accum}", flush=True)
