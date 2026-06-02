@@ -62,7 +62,14 @@ class PhoBERTClassifier(nn.Module):
 class FieldTransformerBlock(nn.Module):
     def __init__(self, hidden_size, num_heads=8, ffn_dim=1024, dropout=0.1):
         super().__init__()
-        self.self_attn = nn.MultiheadAttention(hidden_size, num_heads, dropout=dropout, batch_first=True)
+        if hidden_size % num_heads != 0:
+            raise ValueError(f"hidden_size={hidden_size} must be divisible by num_heads={num_heads}")
+        self.num_heads = num_heads
+        self.head_dim = hidden_size // num_heads
+        self.q_proj = nn.Linear(hidden_size, hidden_size)
+        self.k_proj = nn.Linear(hidden_size, hidden_size)
+        self.v_proj = nn.Linear(hidden_size, hidden_size)
+        self.out_proj = nn.Linear(hidden_size, hidden_size)
         self.norm1 = nn.LayerNorm(hidden_size)
         self.ffn = nn.Sequential(
             nn.Linear(hidden_size, ffn_dim),
@@ -73,8 +80,26 @@ class FieldTransformerBlock(nn.Module):
         self.norm2 = nn.LayerNorm(hidden_size)
         self.dropout = nn.Dropout(dropout)
 
+    def _project_heads(self, projection, x):
+        batch_size, seq_len, hidden_size = x.shape
+        projected = projection(x)
+        return projected.reshape(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+
+    def _self_attention(self, x, key_padding_mask=None):
+        query = self._project_heads(self.q_proj, x)
+        key = self._project_heads(self.k_proj, x)
+        value = self._project_heads(self.v_proj, x)
+        scores = torch.matmul(query, key.transpose(-2, -1)) / (self.head_dim ** 0.5)
+        if key_padding_mask is not None:
+            scores = scores.masked_fill(key_padding_mask[:, None, None, :], torch.finfo(scores.dtype).min)
+        weights = torch.softmax(scores, dim=-1)
+        weights = self.dropout(weights)
+        context = torch.matmul(weights, value)
+        context = context.transpose(1, 2).contiguous().reshape(x.shape)
+        return self.out_proj(context)
+
     def forward(self, x, key_padding_mask=None):
-        attn_out, _ = self.self_attn(x, x, x, key_padding_mask=key_padding_mask, need_weights=False)
+        attn_out = self._self_attention(x, key_padding_mask=key_padding_mask)
         x = self.norm1(x + self.dropout(attn_out))
         ffn_out = self.ffn(x)
         return self.norm2(x + self.dropout(ffn_out))
