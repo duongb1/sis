@@ -51,14 +51,6 @@ VARIANTS = [
         "lambda_aux": 0.5,
         "metrics_folder": "small_multitask",
     },
-    {
-        "name": "small_gated_mtl_aux_0_5",
-        "experiment": "small_multitask",
-        "input_mode": "concat",
-        "pooling": "gated",
-        "lambda_aux": 0.5,
-        "metrics_folder": "small_multitask",
-    },
 ]
 
 
@@ -253,7 +245,6 @@ def main():
     print("- PhoBERT + attention pooling + binary head", flush=True)
     print("- PhoBERT-CLS-MTL, lambda=0.5", flush=True)
     print("- PhoBERT-AttnPool-MTL, lambda=0.5", flush=True)
-    print("- PhoBERT-GatedFusion-MTL, lambda=0.5", flush=True)
     print("Dual T4 note: leave --no-mgpu unset. train_text.py will use torch.nn.DataParallel when two CUDA devices are visible.", flush=True)
     print(f"Batch={args.batch}, accum={args.accum}", flush=True)
     print(f"Excel split stratify label: {args.excel_split_label}", flush=True)

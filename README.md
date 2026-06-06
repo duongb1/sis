@@ -72,7 +72,6 @@ small_multiclass_cls
 small_binary_attnpool
 small_multitask_cls_aux_0_5
 small_multitask_attnpool_aux_0_5
-small_gated_mtl_aux_0_5
 ```
 
 Default output:
