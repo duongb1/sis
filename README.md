@@ -106,6 +106,8 @@ hard negative pair = I63_INFARCTION <-> OTHER_STROKE_LIKE
 inference = binary head only
 ```
 
+For reporting, compare these variants against the strongest baseline: PhoBERT with attention pooling and a binary classification head.
+
 Default output:
 
 ```text
