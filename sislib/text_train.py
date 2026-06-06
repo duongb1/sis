@@ -26,6 +26,36 @@ class AttentionPooling(nn.Module):
         return pooled, weights
 
 
+class GatedClsAttnFusion(nn.Module):
+    def __init__(self, hidden_size: int, dropout: float = 0.1):
+        super().__init__()
+        self.attn_pool = AttentionPooling(hidden_size, dropout=dropout)
+        self.gate = nn.Sequential(
+            nn.Linear(hidden_size * 4, hidden_size),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_size, hidden_size),
+            nn.Sigmoid(),
+        )
+        self.norm = nn.LayerNorm(hidden_size)
+
+    def forward(self, hidden_states, attention_mask):
+        h_cls = hidden_states[:, 0, :]
+        h_attn, attn_weights = self.attn_pool(hidden_states, attention_mask)
+        fusion_features = torch.cat(
+            [
+                h_cls,
+                h_attn,
+                torch.abs(h_cls - h_attn),
+                h_cls * h_attn,
+            ],
+            dim=-1,
+        )
+        gate = self.gate(fusion_features)
+        h_fused = gate * h_cls + (1.0 - gate) * h_attn
+        return self.norm(h_fused), attn_weights
+
+
 class PhoBERTClassifier(nn.Module):
     base_model_prefix = "encoder"
 
@@ -33,12 +63,13 @@ class PhoBERTClassifier(nn.Module):
         super().__init__()
         from transformers import AutoModel
 
-        if pooling not in {"cls", "attention"}:
+        if pooling not in {"cls", "attention", "gated"}:
             raise ValueError(f"Unsupported pooling method: {pooling}")
         self.encoder = AutoModel.from_pretrained(model_name)
         hidden_size = self.encoder.config.hidden_size
         self.pooling = pooling
         self.attn_pool = AttentionPooling(hidden_size, dropout=dropout) if pooling == "attention" else None
+        self.gated_fusion = GatedClsAttnFusion(hidden_size, dropout=dropout) if pooling == "gated" else None
         self.dropout = nn.Dropout(dropout)
         self.classifier = nn.Linear(hidden_size, num_labels)
         self.config = self.encoder.config
@@ -52,6 +83,8 @@ class PhoBERTClassifier(nn.Module):
         hidden = outputs.last_hidden_state
         if self.pooling == "attention":
             pooled, attn_weights = self.attn_pool(hidden, attention_mask)
+        elif self.pooling == "gated":
+            pooled, attn_weights = self.gated_fusion(hidden, attention_mask)
         else:
             pooled, attn_weights = hidden[:, 0], None
         logits = self.classifier(self.dropout(pooled))
@@ -131,12 +164,13 @@ class PhoBERTMultiTask(nn.Module):
         super().__init__()
         from transformers import AutoModel
 
-        if pooling not in {"cls", "attention"}:
+        if pooling not in {"cls", "attention", "gated"}:
             raise ValueError(f"Unsupported pooling method: {pooling}")
         self.encoder = AutoModel.from_pretrained(model_name)
         hidden_size = self.encoder.config.hidden_size
         self.pooling = pooling
         self.attn_pool = AttentionPooling(hidden_size, dropout=dropout) if pooling == "attention" else None
+        self.gated_fusion = GatedClsAttnFusion(hidden_size, dropout=dropout) if pooling == "gated" else None
         self.dropout = nn.Dropout(dropout)
         self.binary_head = nn.Linear(hidden_size, 2)
         self.aux_head = nn.Linear(hidden_size, 3)
@@ -150,6 +184,8 @@ class PhoBERTMultiTask(nn.Module):
         hidden = outputs.last_hidden_state
         if self.pooling == "attention":
             pooled, attn_weights = self.attn_pool(hidden, attention_mask)
+        elif self.pooling == "gated":
+            pooled, attn_weights = self.gated_fusion(hidden, attention_mask)
         else:
             pooled, attn_weights = hidden[:, 0], None
         pooled = self.dropout(pooled)

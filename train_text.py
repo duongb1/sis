@@ -42,7 +42,7 @@ def parse_args():
     p.add_argument("--excel-task", choices=["multiclass", "binary", "multitask"], default="multiclass", help="For Excel input, train on LABEL multi-class targets, co/khong binary targets, or binary + 3-class auxiliary multi-task targets.")
     p.add_argument("--val-ratio", type=float, default=0.1, help="Validation ratio for unsplit Excel input.")
     p.add_argument("--test-ratio", type=float, default=0.1, help="Test ratio for unsplit Excel input.")
-    p.add_argument("--split-strategy", choices=["random", "kfold"], default="random", help="Excel split strategy. kfold uses one fold as 20% test when --n-folds 5.")
+    p.add_argument("--split-strategy", choices=["random", "kfold"], default="random", help="Excel split strategy. kfold uses one fold as 20%% test when --n-folds 5.")
     p.add_argument("--n-folds", type=int, default=5, help="Number of folds for --split-strategy kfold.")
     p.add_argument("--fold-index", type=int, default=0, help="Zero-based held-out test fold for --split-strategy kfold.")
     p.add_argument("--excel-split-label", choices=["target", "binary", "multiclass"], default="multiclass", help="Label source used only to stratify Excel kfold splits.")
@@ -56,8 +56,8 @@ def parse_args():
     p.add_argument("--warmup", type=float, default=0.1)
     p.add_argument("--threshold", type=float, default=0.5)
     p.add_argument("--thresholds", default=None, help="Comma-separated thresholds for binary_positive_label metrics, e.g. 0.30,0.35,0.40,0.45,0.50.")
-    p.add_argument("--lambda-aux", type=float, default=0.5, help="Auxiliary 3-class loss weight for --excel-task multitask.")
-    p.add_argument("--pooling", choices=["cls", "attention"], default="cls", help="Pooling method after PhoBERT encoder. cls keeps the default classifier path; attention learns token-level attention pooling.")
+    p.add_argument("--lambda-aux", "--aux-weight", dest="lambda_aux", type=float, default=0.5, help="Auxiliary 3-class loss weight for --excel-task multitask.")
+    p.add_argument("--pooling", choices=["cls", "attention", "gated"], default="cls", help="Pooling method after PhoBERT encoder. cls uses the first-token representation, attention learns token-level attention pooling, and gated fuses CLS with attention pooling.")
     p.add_argument("--input-mode", choices=["concat", "field"], default="concat", help="Input representation mode: concat all fields or encode Excel fields separately.")
     p.add_argument("--max-len-per-field", type=int, default=128, help="Maximum token length for each clinical field when --input-mode field.")
     p.add_argument("--save-field-attention", action="store_true", help="Save field-level attention weights in field-aware prediction CSVs.")
@@ -74,6 +74,18 @@ def parse_thresholds(value, default):
         return [default]
     thresholds = [float(item.strip()) for item in str(value).split(",") if item.strip()]
     return thresholds or [default]
+
+
+def model_config_metadata(args):
+    fusion = "cls_attention_gated" if args.pooling == "gated" else None
+    config = {
+        "pooling": args.pooling,
+        "fusion": fusion,
+        "aux_weight": args.lambda_aux if args.excel_task == "multitask" else None,
+        "primary_task": "binary_i63" if args.excel_task == "multitask" else args.excel_task,
+        "aux_task": "3class_disease_structure" if args.excel_task == "multitask" else None,
+    }
+    return {key: value for key, value in config.items() if value is not None}
 
 
 def save_model(model, tokenizer, path, epoch, metrics, args, max_len, labels, label_to_id):
@@ -102,6 +114,7 @@ def save_model(model, tokenizer, path, epoch, metrics, args, max_len, labels, la
                 "excel_split_label": args.excel_split_label,
                 "val_ratio": args.val_ratio,
                 "test_ratio": args.test_ratio,
+                "model_config": model_config_metadata(args),
             },
             f,
             ensure_ascii=False,
@@ -135,6 +148,7 @@ def save_state_dict_model(model, tokenizer, path, epoch, metrics, args, max_len,
                 "excel_split_label": args.excel_split_label,
                 "val_ratio": args.val_ratio,
                 "test_ratio": args.test_ratio,
+                "model_config": model_config_metadata(args),
         }
         if aux_labels:
             info.update(
@@ -216,12 +230,14 @@ def main():
             raise RuntimeError("--input-mode field is currently supported only for Excel input.")
         if args.excel_task == "multitask":
             raise RuntimeError("--input-mode field is currently supported for binary/multiclass Excel tasks, not multitask.")
+        if args.pooling == "gated":
+            raise RuntimeError("--pooling gated is currently supported for --input-mode concat. Use --input-mode concat for gated fusion.")
 
     device = get_device(args.cpu)
     tokenizer = AutoTokenizer.from_pretrained(args.model, use_fast=False)
     is_multitask = use_excel and args.excel_task == "multitask"
     is_field_aware = args.input_mode == "field"
-    use_attention_classifier = args.pooling == "attention" and not is_multitask
+    use_custom_classifier = args.pooling in {"attention", "gated"} and not is_multitask
     aux_labels = list(EXCEL_MULTICLASS_LABELS)
     if is_field_aware:
         model = FieldAwarePhoBERTClassifier(
@@ -232,7 +248,7 @@ def main():
         )
     elif is_multitask:
         model = PhoBERTMultiTask(args.model, pooling=args.pooling)
-    elif use_attention_classifier:
+    elif use_custom_classifier:
         model = PhoBERTClassifier(args.model, num_labels=len(labels), pooling=args.pooling)
     else:
         model = AutoModelForSequenceClassification.from_pretrained(
@@ -248,10 +264,13 @@ def main():
     print(f"Data root: {data_root.resolve()}")
     print(f"Labels ({len(labels)}): {', '.join(labels)}")
     if is_multitask:
+        print(f"Primary labels ({len(labels)}): {', '.join(labels)}")
         print(f"Aux labels ({len(aux_labels)}): {', '.join(aux_labels)}")
         print(f"Multi-task loss: loss = loss_binary + {args.lambda_aux:g} * loss_aux")
     print(f"Input mode: {args.input_mode}")
     print(f"Pooling: {args.pooling}")
+    if args.pooling == "gated":
+        print("Fusion: CLS + Attention gated fusion")
     print(f"Text samples: {len(records)} | Train: {len(train_rows)} | Val: {len(val_rows)} | Test: {len(test_rows)}")
 
     dataset_cls = FieldTextDataset if is_field_aware else TextDataset
@@ -322,7 +341,7 @@ def main():
                 save_state_dict_model(model, tokenizer, best_dir, epoch, val_metrics, args, max_len, labels, label_to_id, aux_labels, best_model_metric="primary_binary_auc")
                 save_preds(out / "val_predictions_best_auc.csv", val_ids, val_y, val_p, val_pred, "id", label_names=labels, binary_positive_label=args.binary_positive_label, threshold=args.threshold)
                 save_preds(out / "val_aux_predictions_best_auc.csv", val_ids, val_aux_y, val_aux_p, val_aux_pred, "id", label_names=aux_labels, binary_positive_label=args.binary_positive_label, threshold=args.threshold)
-            elif use_attention_classifier or is_field_aware:
+            elif use_custom_classifier or is_field_aware:
                 save_state_dict_model(model, tokenizer, best_dir, epoch, val_metrics, args, max_len, labels, label_to_id, best_model_metric="auc")
                 save_preds(
                     out / "val_predictions_best_auc.csv",
@@ -371,7 +390,7 @@ def main():
         resolve_max_len(eval_model, max_len)
         eval_model.load_state_dict(torch.load(best_dir / "model.pt", map_location="cpu"))
         eval_model = to_device(eval_model, device, not args.no_mgpu)
-    elif use_attention_classifier:
+    elif use_custom_classifier:
         eval_model = PhoBERTClassifier(args.model, num_labels=len(labels), pooling=args.pooling)
         resolve_max_len(eval_model, max_len)
         eval_model.load_state_dict(torch.load(best_dir / "model.pt", map_location="cpu"))
@@ -449,7 +468,7 @@ def main():
                 extra_rows=field_attention_rows(field_weights) if is_field_aware and args.save_field_attention else None,
             )
             print(format_metrics_summary(split, all_metrics[split]))
-    metrics_payload = {**all_metrics, "binary_threshold_sweep": threshold_sweeps}
+    metrics_payload = {**all_metrics, "binary_threshold_sweep": threshold_sweeps, "model_config": model_config_metadata(args)}
     if is_multitask:
         metrics_payload["selection"] = {
             "checkpoint_metric": "primary_binary_auc",

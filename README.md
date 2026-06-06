@@ -73,7 +73,16 @@ Pooling methods:
 ```text
 cls         Use the default first-token representation path.
 attention   Learn token-level attention pooling over PhoBERT hidden states before classification.
+gated       Learn a gate that fuses the CLS vector with the attention-pooled vector.
 ```
+
+With `--pooling gated`, the model uses:
+
+```text
+h_fused = gate * h_cls + (1 - gate) * h_attn
+```
+
+For multi-task runs, the fused vector feeds the primary binary head and auxiliary 3-class head. Inference still uses the primary binary head only.
 
 Field-aware mode:
 
@@ -156,6 +165,7 @@ small_multiclass_cls                multiclass task + CLS pooling, collapsed to 
 small_binary_attnpool               binary task + token attention pooling
 small_multitask_cls_aux_0_5         binary head + auxiliary 3-class head, CLS pooling, lambda_aux=0.5
 small_multitask_attnpool_aux_0_5    binary head + auxiliary 3-class head, token attention pooling, lambda_aux=0.5
+small_gated_mtl_aux_0_5             binary head + auxiliary 3-class head, gated CLS-attention fusion, lambda_aux=0.5
 ```
 
 The script leaves multi-GPU enabled by default, so `train_text.py` uses `torch.nn.DataParallel` when both T4 GPUs are visible. The default dual-T4 settings are:
@@ -184,12 +194,32 @@ large_multiclass_cls
 large_binary_attnpool
 large_multitask_cls_aux_0_5
 large_multitask_attnpool_aux_0_5
+large_gated_mtl_aux_0_5
 ```
 
 The comparison summary is written to:
 
 ```text
 /kaggle/working/sis_excel_5fold_large_compare_mcstrat/summary_compare.csv
+```
+
+To compare only the gated-fusion multi-task model on small and large:
+
+```bash
+python run_gated_mtl_compare.py
+```
+
+This runs:
+
+```text
+small_gated_mtl_aux_0_5
+large_gated_mtl_aux_0_5
+```
+
+The comparison summary is written to:
+
+```text
+/kaggle/working/sis_excel_5fold_gated_mtl_compare_mcstrat/summary_compare.csv
 ```
 
 To compare PhoBERT attention-pooling multitask auxiliary weights for small binary I63 screening:
