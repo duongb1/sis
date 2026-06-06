@@ -30,7 +30,7 @@ from sislib.text_data import (
     parse_labels_arg,
     save_records,
 )
-from sislib.text_train import FieldAwarePhoBERTClassifier, PhoBERTClassifier, PhoBERTMultiTask, ce_epoch, eval_multitask, eval_text, multitask_epoch
+from sislib.text_train import FieldAwarePhoBERTClassifier, HardNegativeSupConLoss, PhoBERTClassifier, PhoBERTMultiTask, ce_epoch, eval_multitask, eval_text, multitask_epoch
 
 
 def parse_args():
@@ -57,6 +57,11 @@ def parse_args():
     p.add_argument("--threshold", type=float, default=0.5)
     p.add_argument("--thresholds", default=None, help="Comma-separated thresholds for binary_positive_label metrics, e.g. 0.30,0.35,0.40,0.45,0.50.")
     p.add_argument("--lambda-aux", "--aux-weight", dest="lambda_aux", type=float, default=0.5, help="Auxiliary 3-class loss weight for --excel-task multitask.")
+    p.add_argument("--contrastive-loss", choices=["none", "hard_supcon"], default="none", help="Optional auxiliary contrastive loss for binary Excel training.")
+    p.add_argument("--contrastive-weight", type=float, default=0.0)
+    p.add_argument("--contrastive-temperature", type=float, default=0.1)
+    p.add_argument("--hard-negative-weight", type=float, default=2.0)
+    p.add_argument("--contrastive-proj-dim", type=int, default=128)
     p.add_argument("--pooling", choices=["cls", "attention", "gated"], default="cls", help="Pooling method after PhoBERT encoder. cls uses the first-token representation, attention learns token-level attention pooling, and gated fuses CLS with attention pooling.")
     p.add_argument("--input-mode", choices=["concat", "field"], default="concat", help="Input representation mode: concat all fields or encode Excel fields separately.")
     p.add_argument("--max-len-per-field", type=int, default=128, help="Maximum token length for each clinical field when --input-mode field.")
@@ -88,6 +93,17 @@ def model_config_metadata(args):
     return {key: value for key, value in config.items() if value is not None}
 
 
+def contrastive_metadata(args):
+    return {
+        "loss": args.contrastive_loss,
+        "weight": args.contrastive_weight,
+        "temperature": args.contrastive_temperature,
+        "hard_negative_weight": args.hard_negative_weight,
+        "projection_dim": args.contrastive_proj_dim,
+        "hard_negative_pair": ["I63_INFARCTION", "OTHER_STROKE_LIKE"],
+    }
+
+
 def save_model(model, tokenizer, path, epoch, metrics, args, max_len, labels, label_to_id):
     path.mkdir(parents=True, exist_ok=True)
     unwrap(model).save_pretrained(path)
@@ -115,6 +131,7 @@ def save_model(model, tokenizer, path, epoch, metrics, args, max_len, labels, la
                 "val_ratio": args.val_ratio,
                 "test_ratio": args.test_ratio,
                 "model_config": model_config_metadata(args),
+                "contrastive": contrastive_metadata(args),
             },
             f,
             ensure_ascii=False,
@@ -149,6 +166,7 @@ def save_state_dict_model(model, tokenizer, path, epoch, metrics, args, max_len,
                 "val_ratio": args.val_ratio,
                 "test_ratio": args.test_ratio,
                 "model_config": model_config_metadata(args),
+                "contrastive": contrastive_metadata(args),
         }
         if aux_labels:
             info.update(
@@ -225,6 +243,8 @@ def main():
         print(f"Excel split stratify label: {args.excel_split_label}")
         for split_name, rows in [("train", train_rows), ("val", val_rows), ("test", test_rows)]:
             print(f"{split_name} multiclass distribution: {label_distribution(rows, 'multiclass_label_name')}")
+    is_multitask = use_excel and args.excel_task == "multitask"
+    is_field_aware = args.input_mode == "field"
     if args.input_mode == "field":
         if not use_excel:
             raise RuntimeError("--input-mode field is currently supported only for Excel input.")
@@ -232,12 +252,18 @@ def main():
             raise RuntimeError("--input-mode field is currently supported for binary/multiclass Excel tasks, not multitask.")
         if args.pooling == "gated":
             raise RuntimeError("--pooling gated is currently supported for --input-mode concat. Use --input-mode concat for gated fusion.")
+    contrastive_enabled = args.contrastive_loss == "hard_supcon" and args.contrastive_weight > 0
+    if contrastive_enabled:
+        if not use_excel:
+            raise RuntimeError("--contrastive-loss hard_supcon requires Excel input with multiclass LABEL.")
+        if args.excel_task != "binary":
+            raise RuntimeError("--contrastive-loss hard_supcon is currently supported for --excel-task binary only.")
+        if is_field_aware:
+            raise RuntimeError("--contrastive-loss hard_supcon requires --input-mode concat.")
 
     device = get_device(args.cpu)
     tokenizer = AutoTokenizer.from_pretrained(args.model, use_fast=False)
-    is_multitask = use_excel and args.excel_task == "multitask"
-    is_field_aware = args.input_mode == "field"
-    use_custom_classifier = args.pooling in {"attention", "gated"} and not is_multitask
+    use_custom_classifier = (args.pooling in {"attention", "gated"} or contrastive_enabled) and not is_multitask
     aux_labels = list(EXCEL_MULTICLASS_LABELS)
     if is_field_aware:
         model = FieldAwarePhoBERTClassifier(
@@ -249,7 +275,12 @@ def main():
     elif is_multitask:
         model = PhoBERTMultiTask(args.model, pooling=args.pooling)
     elif use_custom_classifier:
-        model = PhoBERTClassifier(args.model, num_labels=len(labels), pooling=args.pooling)
+        model = PhoBERTClassifier(
+            args.model,
+            num_labels=len(labels),
+            pooling=args.pooling,
+            contrastive_proj_dim=args.contrastive_proj_dim if contrastive_enabled else None,
+        )
     else:
         model = AutoModelForSequenceClassification.from_pretrained(
             args.model,
@@ -271,6 +302,12 @@ def main():
     print(f"Pooling: {args.pooling}")
     if args.pooling == "gated":
         print("Fusion: CLS + Attention gated fusion")
+    if contrastive_enabled:
+        print("Contrastive loss: hard_supcon")
+        print(f"Contrastive weight: {args.contrastive_weight:g}")
+        print(f"Contrastive temperature: {args.contrastive_temperature:g}")
+        print(f"Hard negative weight: {args.hard_negative_weight:g}")
+        print(f"Contrastive projection dim: {args.contrastive_proj_dim}")
     print(f"Text samples: {len(records)} | Train: {len(train_rows)} | Val: {len(val_rows)} | Test: {len(test_rows)}")
 
     dataset_cls = FieldTextDataset if is_field_aware else TextDataset
@@ -282,6 +319,15 @@ def main():
     steps = max(1, int(np.ceil(len(train_loader) / max(args.accum, 1))) * args.epochs)
     sched = get_linear_schedule_with_warmup(opt, int(steps * args.warmup), steps)
     scaler = torch.amp.GradScaler("cuda", enabled=device.type == "cuda")
+    contrastive_loss_fn = None
+    if contrastive_enabled:
+        aux_label_to_id = {label: index for index, label in enumerate(EXCEL_MULTICLASS_LABELS)}
+        contrastive_loss_fn = HardNegativeSupConLoss(
+            temperature=args.contrastive_temperature,
+            hard_negative_weight=args.hard_negative_weight,
+            i63_label_id=aux_label_to_id["I63_INFARCTION"],
+            other_stroke_like_label_id=aux_label_to_id["OTHER_STROKE_LIKE"],
+        )
 
     best, best_dir, history = -1.0, out / "best_auc_phobert", []
     for epoch in range(1, args.epochs + 1):
@@ -301,7 +347,25 @@ def main():
             if np.isnan(val_score):
                 val_score = primary_val["f1_macro"]
         else:
-            train_loss = ce_epoch(model, train_loader, opt, sched, scaler, device, args.accum)
+            train_stats = ce_epoch(
+                model,
+                train_loader,
+                opt,
+                sched,
+                scaler,
+                device,
+                args.accum,
+                contrastive_loss_fn=contrastive_loss_fn,
+                contrastive_weight=args.contrastive_weight if contrastive_enabled else 0.0,
+            )
+            if isinstance(train_stats, dict):
+                train_loss = train_stats["total"]
+                train_binary_loss = train_stats["binary"]
+                train_contrastive_loss = train_stats["contrastive"]
+            else:
+                train_loss = train_stats
+                train_binary_loss = train_loss
+                train_contrastive_loss = 0.0
             eval_result = eval_text(
                 model,
                 val_loader,
@@ -330,11 +394,20 @@ def main():
             "val_auc": round_float(primary_val["auc"]),
             "val_score": round_float(val_score),
         })
+        if not is_multitask:
+            history[-1]["train_binary_loss"] = round_float(train_binary_loss)
+            history[-1]["train_contrastive_loss"] = round_float(train_contrastive_loss)
         print(
             f"Epoch {epoch:03d}/{args.epochs} | train_loss={train_loss:.3f} | "
             f"val_loss={primary_val['loss']:.3f} | val_acc={primary_val['accuracy']:.3f} | "
             f"val_f1_macro={primary_val['f1_macro']:.3f} | val_auc={primary_val['auc']:.3f}"
         )
+        if contrastive_enabled:
+            print(
+                f"  train_binary_loss={train_binary_loss:.3f} | "
+                f"train_contrastive_loss={train_contrastive_loss:.3f} | "
+                f"train_total_loss={train_loss:.3f}"
+            )
         if val_score > best:
             best = val_score
             if is_multitask:
@@ -391,7 +464,12 @@ def main():
         eval_model.load_state_dict(torch.load(best_dir / "model.pt", map_location="cpu"))
         eval_model = to_device(eval_model, device, not args.no_mgpu)
     elif use_custom_classifier:
-        eval_model = PhoBERTClassifier(args.model, num_labels=len(labels), pooling=args.pooling)
+        eval_model = PhoBERTClassifier(
+            args.model,
+            num_labels=len(labels),
+            pooling=args.pooling,
+            contrastive_proj_dim=args.contrastive_proj_dim if contrastive_enabled else None,
+        )
         resolve_max_len(eval_model, max_len)
         eval_model.load_state_dict(torch.load(best_dir / "model.pt", map_location="cpu"))
         eval_model = to_device(eval_model, device, not args.no_mgpu)
@@ -468,7 +546,12 @@ def main():
                 extra_rows=field_attention_rows(field_weights) if is_field_aware and args.save_field_attention else None,
             )
             print(format_metrics_summary(split, all_metrics[split]))
-    metrics_payload = {**all_metrics, "binary_threshold_sweep": threshold_sweeps, "model_config": model_config_metadata(args)}
+    metrics_payload = {
+        **all_metrics,
+        "binary_threshold_sweep": threshold_sweeps,
+        "model_config": model_config_metadata(args),
+        "contrastive": contrastive_metadata(args),
+    }
     if is_multitask:
         metrics_payload["selection"] = {
             "checkpoint_metric": "primary_binary_auc",

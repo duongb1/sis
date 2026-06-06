@@ -80,6 +80,38 @@ Default output:
 /kaggle/working/sis_excel_5fold_default_compare_mcstrat
 ```
 
+## Small Hard-Negative SupCon Comparison
+
+Run:
+
+```bash
+python run_small_hard_supcon_compare.py
+```
+
+Models:
+
+```text
+small_binary_attnpool
+small_attnpool_hard_supcon_0_1
+small_attnpool_hard_supcon_0_2
+small_attnpool_hard_supcon_0_3
+```
+
+The hard-negative SupCon variants use:
+
+```text
+PhoBERT -> attention pooling -> binary head
+loss = binary_loss + contrastive_weight * hard_negative_supcon_loss
+hard negative pair = I63_INFARCTION <-> OTHER_STROKE_LIKE
+inference = binary head only
+```
+
+Default output:
+
+```text
+/kaggle/working/sis_excel_5fold_hard_supcon_mcstrat
+```
+
 ## Large Comparison
 
 Run:

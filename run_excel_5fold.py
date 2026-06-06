@@ -84,6 +84,11 @@ def parse_args():
     p.add_argument("--excel-split-label", choices=["target", "binary", "multiclass"], default="multiclass", help="Label source used only to stratify Excel kfold splits.")
     p.add_argument("--only", default="small_binary", help="Comma-separated experiment names to run. Use --only large for all large experiments, --only small for all small experiments, or --only all for every experiment.")
     p.add_argument("--lambda-aux", "--aux-weight", dest="lambda_aux", type=float, default=0.5, help="Auxiliary 3-class loss weight for multitask experiments.")
+    p.add_argument("--contrastive-loss", choices=["none", "hard_supcon"], default="none")
+    p.add_argument("--contrastive-weight", type=float, default=0.0)
+    p.add_argument("--contrastive-temperature", type=float, default=0.1)
+    p.add_argument("--hard-negative-weight", type=float, default=2.0)
+    p.add_argument("--contrastive-proj-dim", type=int, default=128)
     p.add_argument("--force", action="store_true")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--cpu", action="store_true")
@@ -463,6 +468,21 @@ def train_cmd(args, experiment, fold, out):
         cmd.append("--save-field-attention")
     if experiment["task"] == "multitask":
         cmd.extend(["--lambda-aux", args.lambda_aux])
+    if args.contrastive_loss != "none" or args.contrastive_weight > 0:
+        cmd.extend(
+            [
+                "--contrastive-loss",
+                args.contrastive_loss,
+                "--contrastive-weight",
+                args.contrastive_weight,
+                "--contrastive-temperature",
+                args.contrastive_temperature,
+                "--hard-negative-weight",
+                args.hard_negative_weight,
+                "--contrastive-proj-dim",
+                args.contrastive_proj_dim,
+            ]
+        )
     if args.cpu:
         cmd.append("--cpu")
     if args.no_mgpu:

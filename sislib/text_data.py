@@ -248,6 +248,8 @@ def collect_excel_text(
                 "multiclass_label_name": multiclass_label,
                 "raw_multiclass_label_name": raw_multiclass_label,
             }
+            if multiclass_label in EXCEL_MULTICLASS_LABELS:
+                record["multiclass_label"] = EXCEL_MULTICLASS_LABELS.index(multiclass_label)
             if task == "multitask":
                 record["aux_label"] = EXCEL_MULTICLASS_LABELS.index(multiclass_label)
                 record["aux_label_name"] = multiclass_label
@@ -429,6 +431,8 @@ class TextDataset(Dataset):
             item["sample_weight"] = torch.tensor(self.sample_weights[row["id"]], dtype=torch.float32)
         if "aux_label" in row and row["aux_label"] != "":
             item["aux_labels"] = torch.tensor(row["aux_label"], dtype=torch.long)
+        if "multiclass_label" in row and row["multiclass_label"] != "":
+            item["multiclass_labels"] = torch.tensor(row["multiclass_label"], dtype=torch.long)
         item["id"] = row["id"]
         return item
 
@@ -474,11 +478,13 @@ class FieldTextDataset(Dataset):
             item["sample_weight"] = torch.tensor(self.sample_weights[row["id"]], dtype=torch.float32)
         if "aux_label" in row and row["aux_label"] != "":
             item["aux_labels"] = torch.tensor(row["aux_label"], dtype=torch.long)
+        if "multiclass_label" in row and row["multiclass_label"] != "":
+            item["multiclass_labels"] = torch.tensor(row["multiclass_label"], dtype=torch.long)
         return item
 
 
 def save_records(path, records):
-    optional_fields = ["source_file", "row_index", "binary_label_name", "multiclass_label_name", "raw_multiclass_label_name", "aux_label", "aux_label_name", "fold"]
+    optional_fields = ["source_file", "row_index", "binary_label_name", "multiclass_label", "multiclass_label_name", "raw_multiclass_label_name", "aux_label", "aux_label_name", "fold"]
     fieldnames = ["id", "split", "label", "label_name", "text_path"]
     fieldnames.extend(field for field in optional_fields if any(field in row for row in records))
     with open(path, "w", newline="", encoding="utf-8") as f:

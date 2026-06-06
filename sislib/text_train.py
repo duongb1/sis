@@ -56,10 +56,70 @@ class GatedClsAttnFusion(nn.Module):
         return self.norm(h_fused), attn_weights
 
 
+class HardNegativeSupConLoss(nn.Module):
+    def __init__(
+        self,
+        temperature: float = 0.1,
+        hard_negative_weight: float = 2.0,
+        i63_label_id: int = 0,
+        other_stroke_like_label_id: int = 1,
+    ):
+        super().__init__()
+        self.temperature = float(temperature)
+        self.hard_negative_weight = float(hard_negative_weight)
+        self.i63_label_id = int(i63_label_id)
+        self.other_stroke_like_label_id = int(other_stroke_like_label_id)
+
+    def forward(self, features, labels):
+        if features.ndim != 2:
+            raise ValueError("HardNegativeSupConLoss expects features shaped [B, D].")
+        batch_size = features.size(0)
+        if batch_size <= 1:
+            return features.new_tensor(0.0)
+
+        labels = labels.to(device=features.device, dtype=torch.long)
+        valid = labels >= 0
+        if valid.sum() <= 1:
+            return features.new_tensor(0.0)
+        features = features[valid]
+        labels = labels[valid]
+        batch_size = features.size(0)
+
+        sim = torch.matmul(features, features.T) / max(self.temperature, 1e-6)
+        self_mask = torch.eye(batch_size, dtype=torch.bool, device=features.device)
+        label_eq = labels.unsqueeze(0) == labels.unsqueeze(1)
+        positive_mask = label_eq & ~self_mask
+        valid_anchor = positive_mask.sum(dim=1) > 0
+        if not valid_anchor.any():
+            return features.new_tensor(0.0)
+
+        sim = sim - sim.max(dim=1, keepdim=True).values.detach()
+        exp_sim = torch.exp(sim) * (~self_mask).to(dtype=features.dtype)
+
+        weights = torch.ones((batch_size, batch_size), dtype=features.dtype, device=features.device)
+        is_i63 = labels == self.i63_label_id
+        is_other = labels == self.other_stroke_like_label_id
+        hard_pair = (
+            (is_i63.unsqueeze(1) & is_other.unsqueeze(0))
+            | (is_other.unsqueeze(1) & is_i63.unsqueeze(0))
+        )
+        negative_mask = (~label_eq) & (~self_mask)
+        weights = torch.where(hard_pair & negative_mask, weights.new_tensor(self.hard_negative_weight), weights)
+
+        denominator = (weights * exp_sim).sum(dim=1, keepdim=True).clamp_min(1e-12)
+        log_prob = sim - torch.log(denominator)
+        positive_counts = positive_mask.sum(dim=1).clamp_min(1)
+        loss_per_anchor = -(positive_mask.to(dtype=features.dtype) * log_prob).sum(dim=1) / positive_counts
+        loss = loss_per_anchor[valid_anchor].mean()
+        if torch.isnan(loss) or torch.isinf(loss):
+            return features.new_tensor(0.0)
+        return loss
+
+
 class PhoBERTClassifier(nn.Module):
     base_model_prefix = "encoder"
 
-    def __init__(self, model_name="vinai/phobert-base", num_labels=2, dropout=0.1, pooling="attention"):
+    def __init__(self, model_name="vinai/phobert-base", num_labels=2, dropout=0.1, pooling="attention", contrastive_proj_dim=None):
         super().__init__()
         from transformers import AutoModel
 
@@ -72,6 +132,14 @@ class PhoBERTClassifier(nn.Module):
         self.gated_fusion = GatedClsAttnFusion(hidden_size, dropout=dropout) if pooling == "gated" else None
         self.dropout = nn.Dropout(dropout)
         self.classifier = nn.Linear(hidden_size, num_labels)
+        self.contrastive_proj = None
+        if contrastive_proj_dim is not None and int(contrastive_proj_dim) > 0:
+            self.contrastive_proj = nn.Sequential(
+                nn.Linear(hidden_size, hidden_size),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+                nn.Linear(hidden_size, int(contrastive_proj_dim)),
+            )
         self.config = self.encoder.config
         self.config.num_labels = num_labels
 
@@ -87,9 +155,19 @@ class PhoBERTClassifier(nn.Module):
             pooled, attn_weights = self.gated_fusion(hidden, attention_mask)
         else:
             pooled, attn_weights = hidden[:, 0], None
-        logits = self.classifier(self.dropout(pooled))
+        features = pooled
+        logits = self.classifier(self.dropout(features))
+        contrastive_features = None
+        if self.contrastive_proj is not None:
+            contrastive_features = F.normalize(self.contrastive_proj(features), dim=-1)
         loss = F.cross_entropy(logits, labels) if labels is not None else None
-        return {"loss": loss, "logits": logits, "attn_weights": attn_weights}
+        return {
+            "loss": loss,
+            "logits": logits,
+            "features": features,
+            "contrastive_features": contrastive_features,
+            "attn_weights": attn_weights,
+        }
 
 
 class FieldAwarePhoBERTClassifier(nn.Module):
@@ -224,17 +302,25 @@ def hf_loss(outputs, labels):
     return loss.mean()
 
 
-def ce_epoch(model, loader, optimizer, scheduler, scaler, device, accum=1):
+def ce_epoch(model, loader, optimizer, scheduler, scaler, device, accum=1, contrastive_loss_fn=None, contrastive_weight=0.0):
     model.train()
-    total_loss, total_count = 0.0, 0
+    total_loss, total_binary_loss, total_contrastive_loss, total_count = 0.0, 0.0, 0.0, 0
+    use_contrastive = contrastive_loss_fn is not None and float(contrastive_weight) > 0
     optimizer.zero_grad(set_to_none=True)
     for step, batch in enumerate(tqdm(loader, desc="Training", leave=False), start=1):
         inputs, _ = batch_to_device(batch, device, "id")
+        multiclass_labels = inputs.pop("multiclass_labels", None)
+        inputs.pop("sample_weight", None)
         labels = inputs["labels"]
         with torch.amp.autocast("cuda", enabled=device.type == "cuda"):
-            loss = hf_loss(model(**inputs), labels)
-            loss = loss / accum
-        scaler.scale(loss).backward()
+            outputs = model(**inputs)
+            binary_loss = hf_loss(outputs, labels)
+            contrastive_loss = labels.new_tensor(0.0, dtype=binary_loss.dtype).to(device)
+            if use_contrastive and multiclass_labels is not None and isinstance(outputs, dict) and outputs.get("contrastive_features") is not None:
+                contrastive_loss = contrastive_loss_fn(outputs["contrastive_features"].float(), multiclass_labels)
+            loss = binary_loss + float(contrastive_weight) * contrastive_loss
+            scaled_loss = loss / accum
+        scaler.scale(scaled_loss).backward()
         if step % accum == 0 or step == len(loader):
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(unwrap(model).parameters(), max_norm=1.0)
@@ -268,9 +354,16 @@ def multitask_epoch(model, loader, optimizer, scheduler, scaler, device, accum=1
             scheduler.step()
             optimizer.zero_grad(set_to_none=True)
         bs = labels.size(0)
-        total_loss += loss.item() * accum * bs
+        total_loss += loss.item() * bs
+        total_binary_loss += binary_loss.item() * bs
+        total_contrastive_loss += contrastive_loss.item() * bs
         total_count += bs
-    return float(total_loss / max(total_count, 1))
+    stats = {
+        "total": float(total_loss / max(total_count, 1)),
+        "binary": float(total_binary_loss / max(total_count, 1)),
+        "contrastive": float(total_contrastive_loss / max(total_count, 1)),
+    }
+    return stats if use_contrastive else stats["total"]
 
 
 @torch.no_grad()
@@ -282,6 +375,7 @@ def eval_text(model, loader, device, threshold=0.5, desc="Evaluating", label_nam
     for batch in tqdm(loader, desc=desc, leave=False):
         inputs, batch_ids = batch_to_device(batch, device, "id")
         inputs.pop("sample_weight", None)
+        inputs.pop("multiclass_labels", None)
         labels = inputs["labels"]
         outputs = model(**inputs)
         loss = hf_loss(outputs, labels)
@@ -329,6 +423,7 @@ def eval_multitask(model, loader, device, threshold=0.5, desc="Evaluating", bina
     for batch in tqdm(loader, desc=desc, leave=False):
         inputs, batch_ids = batch_to_device(batch, device, "id")
         inputs.pop("sample_weight", None)
+        inputs.pop("multiclass_labels", None)
         labels = inputs["labels"]
         aux_labels = inputs["aux_labels"]
         outputs = model(**inputs, lambda_aux=lambda_aux)
