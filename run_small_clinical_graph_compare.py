@@ -21,7 +21,7 @@ from sislib.clinical_concepts import (
 )
 from sislib.clinical_graph import NODE_TYPES, build_clinical_graph, node_name_vocab
 from sislib.clinical_graph_model import ClinicalGraphOnlyClassifier, PhoBERTClinicalGraphFusion
-from sislib.common import get_device, quiet_hf_logging, round_float, seed_all
+from sislib.common import get_device, quiet_hf_logging, resolve_max_len, round_float, seed_all
 from sislib.data.labels import EXCEL_MULTICLASS_LABEL_MAP, binary_i63_from_multiclass, normalize_multiclass_label
 from sislib.data.splits import assign_kfold_splits
 from sislib.text_train import PhoBERTClassifier
@@ -413,29 +413,33 @@ def run_model_fold(model_name, fold, train_df, val_df, test_df, fields, node_nam
 
     needs_text = model_name != "small_concept_graph_only"
     ds_tokenizer = tokenizer if needs_text else None
+    model = build_model(model_name, args, node_name_to_id)
+    max_len = resolve_max_len(model, args.max_len) if needs_text else args.max_len
+    if needs_text and max_len != args.max_len:
+        print(f"Resolved max_len for {model_name}: requested={args.max_len}, using={max_len}")
     train_loader = DataLoader(
-        ClinicalGraphTextDataset(train_df, ds_tokenizer, fields, args.max_len, node_name_to_id),
+        ClinicalGraphTextDataset(train_df, ds_tokenizer, fields, max_len, node_name_to_id),
         batch_size=args.batch,
         shuffle=True,
         num_workers=args.workers,
         collate_fn=collate_graph_text,
     )
     val_loader = DataLoader(
-        ClinicalGraphTextDataset(val_df, ds_tokenizer, fields, args.max_len, node_name_to_id),
+        ClinicalGraphTextDataset(val_df, ds_tokenizer, fields, max_len, node_name_to_id),
         batch_size=args.batch,
         shuffle=False,
         num_workers=args.workers,
         collate_fn=collate_graph_text,
     )
     test_loader = DataLoader(
-        ClinicalGraphTextDataset(test_df, ds_tokenizer, fields, args.max_len, node_name_to_id),
+        ClinicalGraphTextDataset(test_df, ds_tokenizer, fields, max_len, node_name_to_id),
         batch_size=args.batch,
         shuffle=False,
         num_workers=args.workers,
         collate_fn=collate_graph_text,
     )
 
-    model = build_model(model_name, args, node_name_to_id).to(device)
+    model = model.to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.wd)
     total_steps = max(1, int(np.ceil(len(train_loader) / max(args.accum, 1))) * args.epochs)
     warmup_steps = int(total_steps * args.warmup)
