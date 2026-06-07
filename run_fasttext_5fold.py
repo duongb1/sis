@@ -239,7 +239,7 @@ def get_label_probs(model, text: str) -> dict:
     except ValueError as exc:
         if "Unable to avoid copy" not in str(exc) or not hasattr(model, "f"):
             raise
-        predictions = model.f.predict(text, k=-1, threshold=0.0, on_unicode_error="strict")
+        predictions = model.f.predict(text, -1, 0.0, "strict")
         if predictions:
             probs, labels = zip(*predictions)
         else:
