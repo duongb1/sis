@@ -56,109 +56,10 @@ class GatedClsAttnFusion(nn.Module):
         return self.norm(h_fused), attn_weights
 
 
-class HardNegativeSupConLoss(nn.Module):
-    def __init__(
-        self,
-        temperature: float = 0.1,
-        hard_negative_weight: float = 2.0,
-        i63_label_id: int = 0,
-        other_stroke_like_label_id: int = 1,
-    ):
-        super().__init__()
-        self.temperature = float(temperature)
-        self.hard_negative_weight = float(hard_negative_weight)
-        self.i63_label_id = int(i63_label_id)
-        self.other_stroke_like_label_id = int(other_stroke_like_label_id)
-
-    def forward(self, features, labels):
-        stats = self.debug_stats(features, labels)
-        if not stats["valid_anchor_any"]:
-            return features.new_tensor(0.0)
-
-        features = stats["features"]
-        labels = stats["labels"]
-        sim = stats["sim"]
-        self_mask = stats["self_mask"]
-        label_eq = stats["label_eq"]
-        positive_mask = stats["positive_mask"]
-        valid_anchor = stats["valid_anchor"]
-        hard_pair = stats["hard_pair"]
-
-        sim = sim - sim.max(dim=1, keepdim=True).values.detach()
-        exp_sim = torch.exp(sim) * (~self_mask).to(dtype=features.dtype)
-
-        weights = torch.ones_like(sim)
-        negative_mask = (~label_eq) & (~self_mask)
-        weights = torch.where(hard_pair & negative_mask, weights.new_tensor(self.hard_negative_weight), weights)
-
-        denominator = (weights * exp_sim).sum(dim=1, keepdim=True).clamp_min(1e-12)
-        log_prob = sim - torch.log(denominator)
-        positive_counts = positive_mask.sum(dim=1).clamp_min(1)
-        loss_per_anchor = -(positive_mask.to(dtype=features.dtype) * log_prob).sum(dim=1) / positive_counts
-        loss = loss_per_anchor[valid_anchor].mean()
-        if torch.isnan(loss) or torch.isinf(loss):
-            return features.new_tensor(0.0)
-        return loss
-
-    def debug_stats(self, features, labels):
-        if features.ndim != 2:
-            raise ValueError("HardNegativeSupConLoss expects features shaped [B, D].")
-        batch_size = features.size(0)
-        if batch_size <= 1:
-            return self._empty_debug_stats(features, labels)
-
-        labels = labels.to(device=features.device, dtype=torch.long)
-        valid = labels >= 0
-        if valid.sum() <= 1:
-            return self._empty_debug_stats(features, labels)
-        features = features[valid]
-        labels = labels[valid]
-        batch_size = features.size(0)
-
-        sim = torch.matmul(features, features.T) / max(self.temperature, 1e-6)
-        self_mask = torch.eye(batch_size, dtype=torch.bool, device=features.device)
-        label_eq = labels.unsqueeze(0) == labels.unsqueeze(1)
-        positive_mask = label_eq & ~self_mask
-        valid_anchor = positive_mask.sum(dim=1) > 0
-        is_i63 = labels == self.i63_label_id
-        is_other = labels == self.other_stroke_like_label_id
-        hard_pair = (
-            (is_i63.unsqueeze(1) & is_other.unsqueeze(0))
-            | (is_other.unsqueeze(1) & is_i63.unsqueeze(0))
-        )
-        return {
-            "features": features,
-            "labels": labels,
-            "sim": sim,
-            "self_mask": self_mask,
-            "label_eq": label_eq,
-            "positive_mask": positive_mask,
-            "hard_pair": hard_pair,
-            "valid_anchor": valid_anchor,
-            "valid_anchor_any": bool(valid_anchor.any().item()),
-        }
-
-    def _empty_debug_stats(self, features, labels):
-        labels = labels.to(device=features.device, dtype=torch.long)
-        batch_size = labels.numel()
-        empty_mask = torch.zeros((batch_size, batch_size), dtype=torch.bool, device=features.device)
-        return {
-            "features": features,
-            "labels": labels,
-            "sim": features.new_zeros((batch_size, batch_size)),
-            "self_mask": empty_mask,
-            "label_eq": empty_mask,
-            "positive_mask": empty_mask,
-            "hard_pair": empty_mask,
-            "valid_anchor": torch.zeros((batch_size,), dtype=torch.bool, device=features.device),
-            "valid_anchor_any": False,
-        }
-
-
 class PhoBERTClassifier(nn.Module):
     base_model_prefix = "encoder"
 
-    def __init__(self, model_name="vinai/phobert-base", num_labels=2, dropout=0.1, pooling="attention", contrastive_proj_dim=None):
+    def __init__(self, model_name="vinai/phobert-base", num_labels=2, dropout=0.1, pooling="attention"):
         super().__init__()
         from transformers import AutoModel
 
@@ -171,14 +72,6 @@ class PhoBERTClassifier(nn.Module):
         self.gated_fusion = GatedClsAttnFusion(hidden_size, dropout=dropout) if pooling == "gated" else None
         self.dropout = nn.Dropout(dropout)
         self.classifier = nn.Linear(hidden_size, num_labels)
-        self.contrastive_proj = None
-        if contrastive_proj_dim is not None and int(contrastive_proj_dim) > 0:
-            self.contrastive_proj = nn.Sequential(
-                nn.Linear(hidden_size, hidden_size),
-                nn.ReLU(),
-                nn.Dropout(dropout),
-                nn.Linear(hidden_size, int(contrastive_proj_dim)),
-            )
         self.config = self.encoder.config
         self.config.num_labels = num_labels
 
@@ -196,15 +89,11 @@ class PhoBERTClassifier(nn.Module):
             pooled, attn_weights = hidden[:, 0], None
         features = pooled
         logits = self.classifier(self.dropout(features))
-        contrastive_features = None
-        if self.contrastive_proj is not None:
-            contrastive_features = F.normalize(self.contrastive_proj(features), dim=-1)
         loss = F.cross_entropy(logits, labels) if labels is not None else None
         return {
             "loss": loss,
             "logits": logits,
             "features": features,
-            "contrastive_features": contrastive_features,
             "attn_weights": attn_weights,
         }
 
@@ -341,49 +230,18 @@ def hf_loss(outputs, labels):
     return loss.mean()
 
 
-def ce_epoch(
-    model,
-    loader,
-    optimizer,
-    scheduler,
-    scaler,
-    device,
-    accum=1,
-    contrastive_loss_fn=None,
-    contrastive_weight=0.0,
-    contrastive_debug_batches=0,
-    fail_zero_contrastive=False,
-):
+def ce_epoch(model, loader, optimizer, scheduler, scaler, device, accum=1):
     model.train()
-    total_loss, total_binary_loss, total_contrastive_loss, total_count = 0.0, 0.0, 0.0, 0
-    use_contrastive = contrastive_loss_fn is not None and float(contrastive_weight) > 0
+    total_loss, total_count = 0.0, 0
     optimizer.zero_grad(set_to_none=True)
     for step, batch in enumerate(tqdm(loader, desc="Training", leave=False), start=1):
         inputs, _ = batch_to_device(batch, device, "id")
-        multiclass_labels = inputs.pop("multiclass_labels", None)
+        inputs.pop("multiclass_labels", None)
         inputs.pop("sample_weight", None)
         labels = inputs["labels"]
         with torch.amp.autocast("cuda", enabled=device.type == "cuda"):
             outputs = model(**inputs)
-            binary_loss = hf_loss(outputs, labels)
-            contrastive_loss = labels.new_tensor(0.0, dtype=binary_loss.dtype).to(device)
-            if use_contrastive and multiclass_labels is not None and isinstance(outputs, dict) and outputs.get("contrastive_features") is not None:
-                contrastive_features = outputs["contrastive_features"].float()
-                contrastive_loss = contrastive_loss_fn(contrastive_features, multiclass_labels)
-                if step <= int(contrastive_debug_batches):
-                    stats = contrastive_loss_fn.debug_stats(contrastive_features.detach(), multiclass_labels.detach())
-                    unique_labels, label_counts = torch.unique(stats["labels"].detach().cpu(), return_counts=True)
-                    unique_counts = {int(label): int(count) for label, count in zip(unique_labels, label_counts)}
-                    print(
-                        f"[hard_supcon debug] batch={step} | "
-                        f"multiclass_labels unique/count={unique_counts} | "
-                        f"positive_mask.sum()={int(stats['positive_mask'].sum().item())} | "
-                        f"hard_pair.sum()={int(stats['hard_pair'].sum().item())} | "
-                        f"valid_anchor.sum()={int(stats['valid_anchor'].sum().item())} | "
-                        f"contrastive_loss.item()={float(contrastive_loss.detach().item()):.6f}",
-                        flush=True,
-                    )
-            loss = binary_loss + float(contrastive_weight) * contrastive_loss
+            loss = hf_loss(outputs, labels)
             scaled_loss = loss / accum
         scaler.scale(scaled_loss).backward()
         if step % accum == 0 or step == len(loader):
@@ -395,17 +253,8 @@ def ce_epoch(
             optimizer.zero_grad(set_to_none=True)
         bs = labels.size(0)
         total_loss += loss.item() * bs
-        total_binary_loss += binary_loss.item() * bs
-        total_contrastive_loss += contrastive_loss.item() * bs
         total_count += bs
-    stats = {
-        "total": float(total_loss / max(total_count, 1)),
-        "binary": float(total_binary_loss / max(total_count, 1)),
-        "contrastive": float(total_contrastive_loss / max(total_count, 1)),
-    }
-    if use_contrastive and fail_zero_contrastive and stats["contrastive"] == 0.0:
-        raise RuntimeError("hard_supcon contrastive_loss stayed 0.0 for the entire first epoch; aborting before 5-fold run.")
-    return stats if use_contrastive else stats["total"]
+    return float(total_loss / max(total_count, 1))
 
 
 def multitask_epoch(model, loader, optimizer, scheduler, scaler, device, accum=1, lambda_aux=0.5):
