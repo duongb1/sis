@@ -260,6 +260,13 @@ def main():
             raise RuntimeError("--contrastive-loss hard_supcon is currently supported for --excel-task binary only.")
         if is_field_aware:
             raise RuntimeError("--contrastive-loss hard_supcon requires --input-mode concat.")
+        missing_multiclass = [row["id"] for row in train_rows if "multiclass_label" not in row or row["multiclass_label"] == ""]
+        if missing_multiclass:
+            preview = ", ".join(missing_multiclass[:5])
+            raise RuntimeError(
+                "--contrastive-loss hard_supcon requires multiclass_labels from Excel LABEL for every binary train sample. "
+                f"Missing {len(missing_multiclass)} samples, first examples: {preview}"
+            )
 
     device = get_device(args.cpu)
     tokenizer = AutoTokenizer.from_pretrained(args.model, use_fast=False)
@@ -357,6 +364,8 @@ def main():
                 args.accum,
                 contrastive_loss_fn=contrastive_loss_fn,
                 contrastive_weight=args.contrastive_weight if contrastive_enabled else 0.0,
+                contrastive_debug_batches=3 if contrastive_enabled else 0,
+                fail_zero_contrastive=contrastive_enabled and epoch == 1,
             )
             if isinstance(train_stats, dict):
                 train_loss = train_stats["total"]
@@ -397,6 +406,7 @@ def main():
         if not is_multitask:
             history[-1]["train_binary_loss"] = round_float(train_binary_loss)
             history[-1]["train_contrastive_loss"] = round_float(train_contrastive_loss)
+            history[-1]["train_total_loss"] = round_float(train_loss)
         print(
             f"Epoch {epoch:03d}/{args.epochs} | train_loss={train_loss:.3f} | "
             f"val_loss={primary_val['loss']:.3f} | val_acc={primary_val['accuracy']:.3f} | "
