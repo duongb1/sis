@@ -9,7 +9,6 @@ import pandas as pd
 import torch
 import torch.nn.functional as F
 from sklearn.metrics import accuracy_score, balanced_accuracy_score, confusion_matrix, f1_score, roc_auc_score
-from sklearn.model_selection import StratifiedKFold, train_test_split
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
@@ -23,7 +22,8 @@ from sislib.clinical_concepts import (
 from sislib.clinical_graph import NODE_TYPES, build_clinical_graph, node_name_vocab
 from sislib.clinical_graph_model import ClinicalGraphOnlyClassifier, PhoBERTClinicalGraphFusion
 from sislib.common import get_device, quiet_hf_logging, round_float, seed_all
-from sislib.text_data import EXCEL_MULTICLASS_LABEL_MAP
+from sislib.data.labels import EXCEL_MULTICLASS_LABEL_MAP, binary_i63_from_multiclass, normalize_multiclass_label
+from sislib.data.splits import assign_kfold_splits
 from sislib.text_train import PhoBERTClassifier
 
 quiet_hf_logging()
@@ -115,29 +115,44 @@ def load_excel(excel_root):
     if raw_bad:
         raise ValueError(f"Unexpected raw LABEL values before 3-class mapping: {raw_bad}")
     df["raw_LABEL"] = df["LABEL"]
-    df["LABEL"] = df["LABEL"].map(EXCEL_MULTICLASS_LABEL_MAP)
+    df["LABEL"] = df["LABEL"].map(normalize_multiclass_label)
     bad_labels = set(df["LABEL"].dropna().unique()) - VALID_MULTICLASS_LABELS
     if bad_labels:
         raise ValueError(f"Unexpected LABEL values: {bad_labels}")
-    df["binary_label"] = df["LABEL"].map(BINARY_MAPPING).astype(int)
+    df["binary_label"] = df["LABEL"].map(binary_i63_from_multiclass).astype(int)
     print("Multiclass distribution:")
     print(df["LABEL"].value_counts())
     return df.reset_index(drop=True)
 
 
 def make_splits(df, args):
-    skf = StratifiedKFold(n_splits=args.folds, shuffle=True, random_state=args.seed)
-    val_size_relative = args.val_ratio / (1.0 - args.test_ratio)
-    for fold, (trainval_idx, test_idx) in enumerate(skf.split(df, df["LABEL"])):
-        trainval_df = df.iloc[trainval_idx].reset_index(drop=True)
-        test_df = df.iloc[test_idx].reset_index(drop=True)
-        train_df, val_df = train_test_split(
-            trainval_df,
-            test_size=val_size_relative,
-            random_state=args.seed + fold,
-            stratify=trainval_df["LABEL"],
+    records = [
+        {
+            "index": index,
+            "label": int(row["binary_label"]),
+            "binary_label_name": "co" if int(row["binary_label"]) == 1 else "khong",
+            "multiclass_label_name": row["LABEL"],
+        }
+        for index, row in df.iterrows()
+    ]
+    for fold in range(args.folds):
+        split_records = assign_kfold_splits(
+            [dict(record) for record in records],
+            seed=args.seed,
+            n_folds=args.folds,
+            fold_index=fold,
+            val_ratio=args.val_ratio,
+            split_label="multiclass",
         )
-        yield fold, train_df.reset_index(drop=True), val_df.reset_index(drop=True), test_df.reset_index(drop=True)
+        indices_by_split = {"train": [], "val": [], "test": []}
+        for record in split_records:
+            indices_by_split[record["split"]].append(record["index"])
+        yield (
+            fold,
+            df.iloc[indices_by_split["train"]].reset_index(drop=True),
+            df.iloc[indices_by_split["val"]].reset_index(drop=True),
+            df.iloc[indices_by_split["test"]].reset_index(drop=True),
+        )
 
 
 class ClinicalGraphTextDataset(Dataset):

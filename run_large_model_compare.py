@@ -4,7 +4,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from run_excel_5fold import collect_model_report, mean_std_text
+from sislib.reports import collect_model_report, mean_std_text
 
 
 ROOT = Path(__file__).resolve().parent
