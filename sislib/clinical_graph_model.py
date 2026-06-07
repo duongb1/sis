@@ -87,6 +87,8 @@ class ClinicalGraphOnlyClassifier(nn.Module):
 
 
 class PhoBERTClinicalGraphFusion(nn.Module):
+    base_model_prefix = "encoder"
+
     def __init__(
         self,
         model_name,
