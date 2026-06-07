@@ -80,39 +80,77 @@ Default output:
 /kaggle/working/sis_excel_5fold_default_compare_mcstrat
 ```
 
-## Small Hard-Negative SupCon Comparison
+## FastText Baseline
 
-Run:
+Run the lightweight 5-fold FastText baselines for the small Excel files:
 
 ```bash
-python run_small_hard_supcon_compare.py
+pip install fasttext
+python run_fasttext_5fold.py \
+  --excel-root /kaggle/input/datasets/duongbui/siscth \
+  --output-dir /kaggle/working/sis_excel_5fold_fasttext_mcstrat \
+  --seed 42 \
+  --folds 5 \
+  --val-ratio 0.1 \
+  --test-ratio 0.2 \
+  --threshold 0.5 \
+  --thresholds 0.30,0.35,0.40,0.45,0.50
+```
+
+The runner trains four collapsed I63-vs-non-I63 baselines:
+
+```text
+fasttext_binary_all_fields
+fasttext_binary_chief_exam
+fasttext_multiclass_to_binary_all_fields
+fasttext_multiclass_to_binary_chief_exam
+```
+
+It stratifies folds by the 3-class `LABEL` schema and writes `train.txt`, `val.txt`, `test.txt`, `model.bin`, and `metrics.json` under each model/fold directory.
+
+## Clinical Concept Graph
+
+Run the sample-level clinical concept graph comparison:
+
+```bash
+pip install torch_geometric
+python run_small_clinical_graph_compare.py \
+  --excel-root /kaggle/input/datasets/duongbui/siscth \
+  --output-dir /kaggle/working/sis_excel_5fold_clinical_graph_mcstrat \
+  --model vinai/phobert-base \
+  --epochs 8 \
+  --batch 16 \
+  --lr 2e-5 \
+  --wd 0.01 \
+  --warmup 0.1 \
+  --max-len 512 \
+  --accum 1 \
+  --seed 42 \
+  --threshold 0.5 \
+  --thresholds 0.30,0.35,0.40,0.45,0.50 \
+  --pooling attention \
+  --workers 0 \
+  --folds 5 \
+  --val-ratio 0.1 \
+  --test-ratio 0.2 \
+  --graph-hidden-dim 64 \
+  --graph-layers 2 \
+  --graph-dropout 0.2 \
+  --graph-heads 2 \
+  --graph-conv gat \
+  --graph-pooling patient \
+  --concept-fields all_fields
 ```
 
 Models:
 
 ```text
 small_binary_attnpool
-small_attnpool_hard_supcon_0_1
-small_attnpool_hard_supcon_0_2
-small_attnpool_hard_supcon_0_3
+small_concept_graph_only
+small_phobert_attnpool_clinical_graph_fusion
 ```
 
-The hard-negative SupCon variants use:
-
-```text
-PhoBERT -> attention pooling -> binary head
-loss = binary_loss + contrastive_weight * hard_negative_supcon_loss
-hard negative pair = I63_INFARCTION <-> OTHER_STROKE_LIKE
-inference = binary head only
-```
-
-For reporting, compare these variants against the strongest baseline: PhoBERT with attention pooling and a binary classification head.
-
-Default output:
-
-```text
-/kaggle/working/sis_excel_5fold_hard_supcon_mcstrat
-```
+Each fold saves `best.pt`, `metrics.json`, and `concept_stats.json`. This is a sample-level clinical concept graph, not a corpus-level TextGCN.
 
 ## Large Comparison
 
