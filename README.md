@@ -2,6 +2,21 @@
 
 This repo is focused on Excel-based PhoBERT training for I63 vs non-I63 screening.
 
+## Code Organization
+
+Core reusable code lives under `sislib/`:
+
+```text
+sislib/data            shared Excel text columns, label mapping, and split protocol
+sislib/reports.py      5-fold aggregation, summary CSV/JSON, threshold and comparison reports
+sislib/runner_utils.py subprocess runner helpers with PYTHONPATH handling
+sislib/text_data.py    backward-compatible text/Excel dataset API
+sislib/text_train.py   PhoBERT model classes and train/eval loops
+sislib/clinical_*      clinical concept extraction, graph construction, and graph/fusion models
+```
+
+Experiment scripts stay at repo root and should reuse these shared modules instead of duplicating label, split, or report logic.
+
 ## Data
 
 Expected Kaggle Excel root:

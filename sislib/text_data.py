@@ -5,19 +5,14 @@ from pathlib import Path
 
 import torch
 from torch.utils.data import Dataset
-from sklearn.model_selection import StratifiedKFold, train_test_split
+from sklearn.model_selection import train_test_split
 
 from .common import LABELS, LABEL_TO_ID, SPLITS, read_text
+from .data.labels import EXCEL_MULTICLASS_LABELS, EXCEL_TEXT_COLUMNS, normalize_multiclass_label
+from .data.splits import assign_kfold_splits
 
 
-EXCEL_TEXT_COLUMNS = ["LYDO", "HB_BENHLY", "HB_BANTHAN", "HB_GIADINH", "KB_TOANTHAN", "KB_BOPHAN"]
-EXCEL_MULTICLASS_LABELS = ["I63_INFARCTION", "OTHER_STROKE_LIKE", "DISTANT_OTHER"]
-EXCEL_MULTICLASS_LABEL_MAP = {
-    "I63_INFARCTION": "I63_INFARCTION",
-    "OTHER_CEREBROVASCULAR": "OTHER_STROKE_LIKE",
-    "STROKE_MIMIC_NEURO": "OTHER_STROKE_LIKE",
-    "DISTANT_OTHER": "DISTANT_OTHER",
-}
+from .data.labels import EXCEL_MULTICLASS_LABEL_MAP  # Backward-compatible re-export.
 
 
 def parse_labels_arg(value):
@@ -83,7 +78,7 @@ def _label_from_excel_filename(path):
 
 def _excel_multiclass_label(value):
     label = _clean_cell(value)
-    return EXCEL_MULTICLASS_LABEL_MAP.get(label, label)
+    return normalize_multiclass_label(label)
 
 
 def _join_excel_row(row):
@@ -129,41 +124,7 @@ def _split_by_label(records, seed=42, val_ratio=0.1, test_ratio=0.1):
 
 
 def _split_excel_kfold(records, seed=42, n_folds=5, fold_index=0, val_ratio=0.1, split_label="target"):
-    if n_folds < 2:
-        raise ValueError("--n-folds must be at least 2.")
-    if fold_index < 0 or fold_index >= n_folds:
-        raise ValueError(f"--fold-index must be between 0 and {n_folds - 1}.")
-
-    if split_label == "binary":
-        y = [record["binary_label_name"] for record in records]
-    elif split_label == "multiclass":
-        y = [record["multiclass_label_name"] for record in records]
-    elif split_label == "target":
-        y = [record["label"] for record in records]
-    else:
-        raise ValueError(f"Unknown split_label: {split_label}")
-    indices = list(range(len(records)))
-    splitter = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=seed)
-    folds = list(splitter.split(indices, y))
-    train_val_idx, test_idx = folds[fold_index]
-    train_val_idx = list(train_val_idx)
-    test_idx = list(test_idx)
-
-    test_ratio = 1.0 / n_folds
-    val_ratio_within_train_val = val_ratio / (1.0 - test_ratio)
-    train_idx, val_idx = train_test_split(
-        train_val_idx,
-        test_size=val_ratio_within_train_val,
-        random_state=seed + fold_index,
-        stratify=[y[index] for index in train_val_idx],
-    )
-    split_by_index = {index: "train" for index in train_idx}
-    split_by_index.update({index: "val" for index in val_idx})
-    split_by_index.update({index: "test" for index in test_idx})
-    for index, record in enumerate(records):
-        record["split"] = split_by_index[index]
-        record["fold"] = fold_index
-    return records
+    return assign_kfold_splits(records, seed=seed, n_folds=n_folds, fold_index=fold_index, val_ratio=val_ratio, split_label=split_label)
 
 
 def discover_excel_labels(data, task="multiclass"):

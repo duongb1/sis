@@ -7,17 +7,12 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from sklearn.metrics import accuracy_score, balanced_accuracy_score, confusion_matrix, f1_score, roc_auc_score
-from sklearn.model_selection import StratifiedKFold, train_test_split
+
+from sislib.data.labels import EXCEL_MULTICLASS_LABEL_MAP, EXCEL_TEXT_COLUMNS, binary_i63_from_multiclass, normalize_multiclass_label
+from sislib.data.splits import assign_kfold_splits
 
 
-TEXT_FIELDS_ALL = [
-    "LYDO",
-    "HB_BENHLY",
-    "HB_BANTHAN",
-    "HB_GIADINH",
-    "KB_TOANTHAN",
-    "KB_BOPHAN",
-]
+TEXT_FIELDS_ALL = EXCEL_TEXT_COLUMNS
 TEXT_FIELDS_CHIEF_EXAM = [
     "LYDO",
     "HB_BENHLY",
@@ -30,18 +25,7 @@ VALID_MULTICLASS_LABELS = {
     "I63_INFARCTION",
     "OTHER_STROKE_LIKE",
 }
-MULTICLASS_LABELS = [
-    "DISTANT_OTHER",
-    "I63_INFARCTION",
-    "OTHER_STROKE_LIKE",
-]
-RAW_LABEL_MAPPING = {
-    "DISTANT_OTHER": "DISTANT_OTHER",
-    "I63_INFARCTION": "I63_INFARCTION",
-    "OTHER_CEREBROVASCULAR": "OTHER_STROKE_LIKE",
-    "STROKE_MIMIC_NEURO": "OTHER_STROKE_LIKE",
-    "OTHER_STROKE_LIKE": "OTHER_STROKE_LIKE",
-}
+MULTICLASS_LABELS = ["DISTANT_OTHER", "I63_INFARCTION", "OTHER_STROKE_LIKE"]
 BINARY_MAPPING = {
     "I63_INFARCTION": "co",
     "OTHER_STROKE_LIKE": "khong",
@@ -161,12 +145,12 @@ def load_excel(excel_root):
     df = pd.concat(frames, ignore_index=True)
 
     raw_labels = set(df["LABEL"].dropna().astype(str).unique())
-    unexpected_raw = raw_labels - set(RAW_LABEL_MAPPING)
+    unexpected_raw = raw_labels - set(EXCEL_MULTICLASS_LABEL_MAP)
     if unexpected_raw:
         raise ValueError(f"Unexpected raw LABEL values before 3-class mapping: {unexpected_raw}")
 
     df["raw_LABEL"] = df["LABEL"]
-    df["LABEL"] = df["LABEL"].map(RAW_LABEL_MAPPING)
+    df["LABEL"] = df["LABEL"].map(normalize_multiclass_label)
     bad_labels = set(df["LABEL"].dropna().unique()) - VALID_MULTICLASS_LABELS
     if bad_labels:
         raise ValueError(f"Unexpected LABEL values: {bad_labels}")
@@ -177,21 +161,33 @@ def load_excel(excel_root):
 
 
 def make_splits(df, args):
-    skf = StratifiedKFold(n_splits=args.folds, shuffle=True, random_state=args.seed)
-    val_size_relative = args.val_ratio / (1.0 - args.test_ratio)
-    if not 0.0 < val_size_relative < 1.0:
-        raise ValueError(f"Invalid val/test ratio combination: val_size_relative={val_size_relative}")
-
-    for fold, (trainval_idx, test_idx) in enumerate(skf.split(df, df["LABEL"])):
-        trainval_df = df.iloc[trainval_idx].reset_index(drop=True)
-        test_df = df.iloc[test_idx].reset_index(drop=True)
-        train_df, val_df = train_test_split(
-            trainval_df,
-            test_size=val_size_relative,
-            random_state=args.seed + fold,
-            stratify=trainval_df["LABEL"],
+    records = [
+        {
+            "index": index,
+            "label": int(binary_i63_from_multiclass(row["LABEL"])),
+            "binary_label_name": BINARY_MAPPING[row["LABEL"]],
+            "multiclass_label_name": row["LABEL"],
+        }
+        for index, row in df.iterrows()
+    ]
+    for fold in range(args.folds):
+        split_records = assign_kfold_splits(
+            [dict(record) for record in records],
+            seed=args.seed,
+            n_folds=args.folds,
+            fold_index=fold,
+            val_ratio=args.val_ratio,
+            split_label="multiclass",
         )
-        yield fold, train_df.reset_index(drop=True), val_df.reset_index(drop=True), test_df
+        indices_by_split = {"train": [], "val": [], "test": []}
+        for record in split_records:
+            indices_by_split[record["split"]].append(record["index"])
+        yield (
+            fold,
+            df.iloc[indices_by_split["train"]].reset_index(drop=True),
+            df.iloc[indices_by_split["val"]].reset_index(drop=True),
+            df.iloc[indices_by_split["test"]].reset_index(drop=True),
+        )
 
 
 def training_label(row, task):
