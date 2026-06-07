@@ -234,7 +234,16 @@ def train_fasttext(train_path, val_path, args):
 
 
 def get_label_probs(model, text: str) -> dict:
-    labels, probs = model.predict(text, k=-1)
+    try:
+        labels, probs = model.predict(text, k=-1)
+    except ValueError as exc:
+        if "Unable to avoid copy" not in str(exc) or not hasattr(model, "f"):
+            raise
+        predictions = model.f.predict(text, k=-1, threshold=0.0, on_unicode_error="strict")
+        if predictions:
+            probs, labels = zip(*predictions)
+        else:
+            labels, probs = [], []
     return {label: float(prob) for label, prob in zip(labels, probs)}
 
 
