@@ -3,9 +3,12 @@ __pycache__/
 
 # Local/Kaggle datasets and generated artifacts
 images/
+images_3class/
+images_renumbered/
 texts/
 data.zip
 *.zip
+*.xlsx
 
 # Model outputs/checkpoints
 *.pt
