@@ -45,6 +45,8 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--cpu", action="store_true")
     parser.add_argument("--no-class-weight", action="store_true")
+    parser.add_argument("--precision", choices=["fp32", "fp16"], default="fp16")
+    parser.add_argument("--no-dp", action="store_true", help="Disable DataParallel when multiple CUDA devices are available.")
     return parser.parse_args()
 
 
@@ -180,6 +182,23 @@ class CaseMeanPoolCNN(nn.Module):
         return self.classifier(case_features)
 
 
+class CaseMeanPoolDP(nn.Module):
+    def __init__(self, base_model):
+        super().__init__()
+        self.backbone = nn.DataParallel(base_model.backbone)
+        self.classifier = base_model.classifier
+
+    def forward(self, images, lengths):
+        features = self.backbone(images)
+        pooled = []
+        offset = 0
+        for length in lengths.tolist():
+            pooled.append(features[offset : offset + length].mean(dim=0))
+            offset += length
+        case_features = torch.stack(pooled, dim=0)
+        return self.classifier(case_features)
+
+
 def class_weights(rows):
     counts = Counter(int(row["label_3class_id"]) for row in rows)
     total = sum(counts.values())
@@ -189,7 +208,11 @@ def class_weights(rows):
     return torch.tensor(weights, dtype=torch.float32)
 
 
-def run_epoch(model, loader, criterion, optimizer, device):
+def autocast_context(device, precision):
+    return torch.amp.autocast(device_type="cuda", dtype=torch.float16, enabled=(device.type == "cuda" and precision == "fp16"))
+
+
+def run_epoch(model, loader, criterion, optimizer, scaler, device, precision):
     model.train()
     total_loss = 0.0
     for batch in loader:
@@ -197,16 +220,22 @@ def run_epoch(model, loader, criterion, optimizer, device):
         images = batch["images"].to(device)
         labels = batch["labels"].to(device)
         lengths = batch["lengths"].to(device)
-        logits = model(images, lengths)
-        loss = criterion(logits, labels)
-        loss.backward()
-        optimizer.step()
+        with autocast_context(device, precision):
+            logits = model(images, lengths)
+            loss = criterion(logits, labels)
+        if scaler.is_enabled():
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            optimizer.step()
         total_loss += loss.item() * labels.size(0)
     return total_loss / max(1, len(loader.dataset))
 
 
 @torch.no_grad()
-def evaluate(model, loader, criterion, device):
+def evaluate(model, loader, criterion, device, precision):
     model.eval()
     total_loss = 0.0
     y_true, y_pred, y_prob = [], [], []
@@ -215,8 +244,9 @@ def evaluate(model, loader, criterion, device):
         images = batch["images"].to(device)
         labels = batch["labels"].to(device)
         lengths = batch["lengths"].to(device)
-        logits = model(images, lengths)
-        loss = criterion(logits, labels)
+        with autocast_context(device, precision):
+            logits = model(images, lengths)
+            loss = criterion(logits, labels)
         probs = torch.softmax(logits, dim=1)
         total_loss += loss.item() * labels.size(0)
         y_true.extend(labels.cpu().tolist())
@@ -316,16 +346,21 @@ def main():
     }
 
     model = CaseMeanPoolCNN(num_classes=len(EXCEL_MULTICLASS_LABELS), pretrained=args.pretrained).to(device)
+    cuda_devices = torch.cuda.device_count() if device.type == "cuda" else 0
+    if cuda_devices > 1 and not args.no_dp:
+        model = CaseMeanPoolDP(model)
+    print(f"device={device} cuda_devices={cuda_devices} precision={args.precision} data_parallel={isinstance(model, CaseMeanPoolDP)}")
     weights = None if args.no_class_weight else class_weights(train_rows).to(device)
     criterion = nn.CrossEntropyLoss(weight=weights)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.wd)
+    scaler = torch.amp.GradScaler("cuda", enabled=(device.type == "cuda" and args.precision == "fp16"))
 
     history = []
     best_val = -1.0
     best_path = out / "best.pt"
     for epoch in range(1, args.epochs + 1):
-        train_loss = run_epoch(model, loaders["train"], criterion, optimizer, device)
-        val_metrics, _ = evaluate(model, loaders["val"], criterion, device)
+        train_loss = run_epoch(model, loaders["train"], criterion, optimizer, scaler, device, args.precision)
+        val_metrics, _ = evaluate(model, loaders["val"], criterion, device, args.precision)
         entry = {"epoch": epoch, "train_loss": train_loss, **{f"val_{k}": v for k, v in val_metrics.items() if isinstance(v, (int, float))}}
         history.append(entry)
         print(
@@ -340,7 +375,7 @@ def main():
     model.load_state_dict(checkpoint["model"])
     final = {"fold": args.fold_index, "device": str(device), "labels": EXCEL_MULTICLASS_LABELS, "history": history}
     for split in ["train", "val", "test"]:
-        metrics, predictions = evaluate(model, loaders[split], criterion, device)
+        metrics, predictions = evaluate(model, loaders[split], criterion, device, args.precision)
         final[split] = metrics
         write_predictions(out / f"predictions_{split}.csv", predictions)
     with (out / "metrics.json").open("w", encoding="utf-8") as handle:
