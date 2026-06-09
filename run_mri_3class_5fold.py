@@ -24,7 +24,9 @@ def parse_args():
     parser.add_argument("--max-images-per-case", type=int, default=16)
     parser.add_argument("--workers", type=int, default=0)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--precision", choices=["fp32", "fp16"], default="fp16")
     parser.add_argument("--cpu", action="store_true")
+    parser.add_argument("--no-dp", action="store_true")
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
@@ -58,11 +60,15 @@ def train_command(args, fold, out):
         str(args.workers),
         "--seed",
         str(args.seed),
+        "--precision",
+        args.precision,
     ]
     if args.pretrained:
         cmd.append("--pretrained")
     if args.cpu:
         cmd.append("--cpu")
+    if args.no_dp:
+        cmd.append("--no-dp")
     return cmd
 
 
