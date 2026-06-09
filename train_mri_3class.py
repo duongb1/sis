@@ -62,16 +62,12 @@ def read_rows(path, fold_index, split):
         return [row for row in reader if int(row["fold"]) == fold_index and row["split"] == split]
 
 
-def case_images(image_dir):
+def case_image_pairs(image_dir):
     root = Path(image_dir)
-    paths = []
-    for subdir in ["DWI", "ADC"]:
-        folder = root / subdir
-        if folder.is_dir():
-            paths.extend(sorted(folder.glob("*.JPG")))
-    if not paths:
-        paths = sorted(root.rglob("*.JPG"))
-    return paths
+    adc_paths = sorted((root / "ADC").glob("*.JPG")) if (root / "ADC").is_dir() else []
+    dwi_paths = sorted((root / "DWI").glob("*.JPG")) if (root / "DWI").is_dir() else []
+    pair_count = min(len(adc_paths), len(dwi_paths))
+    return list(zip(adc_paths[:pair_count], dwi_paths[:pair_count]))
 
 
 def resolve_image_dir(row, image_root):
@@ -93,54 +89,59 @@ class MRICaseDataset(Dataset):
         self.max_images_per_case = max_images_per_case
         self.train = train
         self.rng = random.Random(seed)
-        normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        self.resize = transforms.Resize((image_size, image_size))
+        self.to_tensor = transforms.ToTensor()
+        self.normalize = transforms.Normalize(mean=[0.485, 0.456, 0.0], std=[0.229, 0.224, 1.0])
         if train:
-            self.transform = transforms.Compose(
-                [
-                    transforms.Resize((image_size, image_size)),
-                    transforms.RandomHorizontalFlip(p=0.5),
-                    transforms.RandomRotation(degrees=5),
-                    transforms.ToTensor(),
-                    normalize,
-                ]
+            self.spatial_transform = transforms.Compose(
+                [transforms.RandomHorizontalFlip(p=0.5), transforms.RandomRotation(degrees=5)]
             )
         else:
-            self.transform = transforms.Compose(
-                [
-                    transforms.Resize((image_size, image_size)),
-                    transforms.ToTensor(),
-                    normalize,
-                ]
-            )
+            self.spatial_transform = None
 
     def __len__(self):
         return len(self.rows)
 
-    def _select_images(self, paths):
-        if len(paths) <= self.max_images_per_case:
-            return paths
+    def _select_pairs(self, pairs):
+        if len(pairs) <= self.max_images_per_case:
+            return pairs
         if self.train:
-            return sorted(self.rng.sample(paths, self.max_images_per_case))
-        step = len(paths) / self.max_images_per_case
-        indices = [min(len(paths) - 1, int(i * step + step / 2)) for i in range(self.max_images_per_case)]
-        return [paths[index] for index in indices]
+            return sorted(self.rng.sample(pairs, self.max_images_per_case))
+        step = len(pairs) / self.max_images_per_case
+        indices = [min(len(pairs) - 1, int(i * step + step / 2)) for i in range(self.max_images_per_case)]
+        return [pairs[index] for index in indices]
+
+    def _load_pair(self, adc_path, dwi_path):
+        adc = self.resize(Image.open(adc_path).convert("L"))
+        dwi = self.resize(Image.open(dwi_path).convert("L"))
+        if self.spatial_transform is not None:
+            seed = self.rng.randint(0, 2**32 - 1)
+            random.seed(seed)
+            torch.manual_seed(seed)
+            adc = self.spatial_transform(adc)
+            random.seed(seed)
+            torch.manual_seed(seed)
+            dwi = self.spatial_transform(dwi)
+        adc_tensor = self.to_tensor(adc).squeeze(0)
+        dwi_tensor = self.to_tensor(dwi).squeeze(0)
+        zeros = torch.zeros_like(adc_tensor)
+        return self.normalize(torch.stack([adc_tensor, dwi_tensor, zeros], dim=0))
 
     def __getitem__(self, index):
         row = self.rows[index]
         image_dir = resolve_image_dir(row, self.image_root)
-        paths = self._select_images(case_images(image_dir))
-        if not paths:
-            raise FileNotFoundError(f"No JPG images found in {image_dir}")
+        pairs = self._select_pairs(case_image_pairs(image_dir))
+        if not pairs:
+            raise FileNotFoundError(f"No paired ADC/DWI JPG images found in {image_dir}")
         images = []
-        for path in paths:
-            image = Image.open(path).convert("RGB")
-            images.append(self.transform(image))
+        for adc_path, dwi_path in pairs:
+            images.append(self._load_pair(adc_path, dwi_path))
         return {
             "images": torch.stack(images),
             "label": int(row["label_3class_id"]),
             "case_id": row["case_id"],
             "mabn": row["MABN"],
-            "image_count": len(paths),
+            "image_count": len(pairs),
         }
 
 
