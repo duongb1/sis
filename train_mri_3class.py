@@ -25,12 +25,15 @@ from torchvision import models, transforms
 from sislib.data.labels import EXCEL_MULTICLASS_LABELS
 
 
+DEFAULT_KAGGLE_MRI_ROOT = "/kaggle/input/datasets/duongbui/siscth/mri"
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Train a 3-class MRI case-level classifier.")
-    parser.add_argument("--folds-csv", default="mri_3class_folds.csv")
+    parser.add_argument("--folds-csv", default=f"{DEFAULT_KAGGLE_MRI_ROOT}/mri_3class_folds.csv")
+    parser.add_argument("--image-root", default=f"{DEFAULT_KAGGLE_MRI_ROOT}/images")
     parser.add_argument("--fold-index", type=int, default=0)
-    parser.add_argument("--out", default="outputs/mri_3class/fold_0")
-    parser.add_argument("--model", choices=["resnet18", "resnet34"], default="resnet18")
+    parser.add_argument("--out", default="/kaggle/working/mri_3class/fold_0")
     parser.add_argument("--pretrained", action="store_true", help="Use torchvision ImageNet weights if available.")
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch", type=int, default=4)
@@ -71,9 +74,22 @@ def case_images(image_dir):
     return paths
 
 
+def resolve_image_dir(row, image_root):
+    root = Path(image_root)
+    case_dir = root / str(row["case_id"])
+    if case_dir.is_dir():
+        return case_dir
+    if row.get("image_dir"):
+        fallback = Path(row["image_dir"])
+        if fallback.is_dir():
+            return fallback
+    return case_dir
+
+
 class MRICaseDataset(Dataset):
-    def __init__(self, rows, image_size=224, max_images_per_case=16, train=False, seed=42):
+    def __init__(self, rows, image_root, image_size=224, max_images_per_case=16, train=False, seed=42):
         self.rows = list(rows)
+        self.image_root = image_root
         self.max_images_per_case = max_images_per_case
         self.train = train
         self.rng = random.Random(seed)
@@ -111,9 +127,10 @@ class MRICaseDataset(Dataset):
 
     def __getitem__(self, index):
         row = self.rows[index]
-        paths = self._select_images(case_images(row["image_dir"]))
+        image_dir = resolve_image_dir(row, self.image_root)
+        paths = self._select_images(case_images(image_dir))
         if not paths:
-            raise FileNotFoundError(f"No JPG images found in {row['image_dir']}")
+            raise FileNotFoundError(f"No JPG images found in {image_dir}")
         images = []
         for path in paths:
             image = Image.open(path).convert("RGB")
@@ -142,14 +159,10 @@ def collate_cases(batch):
 
 
 class CaseMeanPoolCNN(nn.Module):
-    def __init__(self, backbone_name="resnet18", num_classes=3, pretrained=False):
+    def __init__(self, num_classes=3, pretrained=False):
         super().__init__()
-        if backbone_name == "resnet34":
-            weights = models.ResNet34_Weights.DEFAULT if pretrained else None
-            backbone = models.resnet34(weights=weights)
-        else:
-            weights = models.ResNet18_Weights.DEFAULT if pretrained else None
-            backbone = models.resnet18(weights=weights)
+        weights = models.ResNet50_Weights.DEFAULT if pretrained else None
+        backbone = models.resnet50(weights=weights)
         in_features = backbone.fc.in_features
         backbone.fc = nn.Identity()
         self.backbone = backbone
@@ -286,9 +299,9 @@ def main():
     val_rows = read_rows(args.folds_csv, args.fold_index, "val")
     test_rows = read_rows(args.folds_csv, args.fold_index, "test")
     datasets = {
-        "train": MRICaseDataset(train_rows, args.image_size, args.max_images_per_case, train=True, seed=args.seed),
-        "val": MRICaseDataset(val_rows, args.image_size, args.max_images_per_case, train=False, seed=args.seed),
-        "test": MRICaseDataset(test_rows, args.image_size, args.max_images_per_case, train=False, seed=args.seed),
+        "train": MRICaseDataset(train_rows, args.image_root, args.image_size, args.max_images_per_case, train=True, seed=args.seed),
+        "val": MRICaseDataset(val_rows, args.image_root, args.image_size, args.max_images_per_case, train=False, seed=args.seed),
+        "test": MRICaseDataset(test_rows, args.image_root, args.image_size, args.max_images_per_case, train=False, seed=args.seed),
     }
     loaders = {
         split: DataLoader(
@@ -301,7 +314,7 @@ def main():
         for split, dataset in datasets.items()
     }
 
-    model = CaseMeanPoolCNN(args.model, num_classes=len(EXCEL_MULTICLASS_LABELS), pretrained=args.pretrained).to(device)
+    model = CaseMeanPoolCNN(num_classes=len(EXCEL_MULTICLASS_LABELS), pretrained=args.pretrained).to(device)
     weights = None if args.no_class_weight else class_weights(train_rows).to(device)
     criterion = nn.CrossEntropyLoss(weight=weights)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.wd)

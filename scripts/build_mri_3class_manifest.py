@@ -19,20 +19,24 @@ from sislib.data.labels import (
 )
 
 
+DEFAULT_KAGGLE_MRI_ROOT = "/kaggle/input/datasets/duongbui/siscth/mri"
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Build a 3-class MRI manifest and 5-fold patient-group splits.")
-    parser.add_argument("--image-root", default="images_renumbered")
-    parser.add_argument("--co-excel", default="700_co.xlsx")
-    parser.add_argument("--khong-excel", default="700_khong.xlsx")
-    parser.add_argument("--out-manifest", default="images_renumbered/mri_3class_manifest.csv")
-    parser.add_argument("--out-folds", default="images_renumbered/mri_3class_folds.csv")
+    parser.add_argument("--image-root", default=f"{DEFAULT_KAGGLE_MRI_ROOT}/images")
+    parser.add_argument("--excel", default=f"{DEFAULT_KAGGLE_MRI_ROOT}/mri_3class.xlsx")
+    parser.add_argument("--co-excel", default=None)
+    parser.add_argument("--khong-excel", default=None)
+    parser.add_argument("--out-manifest", default="/kaggle/working/mri_3class_manifest.csv")
+    parser.add_argument("--out-folds", default="/kaggle/working/mri_3class_folds.csv")
     parser.add_argument("--folds", type=int, default=5)
     parser.add_argument("--val-ratio", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=42)
     return parser.parse_args()
 
 
-def read_excel_rows(path, source_label):
+def read_excel_rows(path, source_label=""):
     wb = load_workbook(path, read_only=True, data_only=True)
     ws = wb["Final"]
     headers = next(ws.iter_rows(min_row=1, max_row=1, values_only=True))
@@ -47,10 +51,15 @@ def read_excel_rows(path, source_label):
         stt = values[header_to_index["STT"]]
         maicd = values[header_to_index["MAICD"]]
         label = mri_3class_from_maicd(maicd)
+        if "LABEL" in header_to_index and values[header_to_index["LABEL"]]:
+            label = str(values[header_to_index["LABEL"]]).strip()
+        row_source_label = source_label
+        if "SOURCE_BINARY_LABEL" in header_to_index and values[header_to_index["SOURCE_BINARY_LABEL"]]:
+            row_source_label = str(values[header_to_index["SOURCE_BINARY_LABEL"]]).strip()
         rows.append(
             {
                 "case_id": str(stt),
-                "source_binary_label": source_label,
+                "source_binary_label": row_source_label,
                 "source_file": Path(path).name,
                 "excel_row": excel_row,
                 "STT": stt,
@@ -163,8 +172,13 @@ def main():
     args = parse_args()
     image_root = Path(args.image_root)
     rows = []
-    rows.extend(read_excel_rows(args.co_excel, "co"))
-    rows.extend(read_excel_rows(args.khong_excel, "khong"))
+    if args.co_excel or args.khong_excel:
+        if not args.co_excel or not args.khong_excel:
+            raise ValueError("--co-excel and --khong-excel must be provided together.")
+        rows.extend(read_excel_rows(args.co_excel, "co"))
+        rows.extend(read_excel_rows(args.khong_excel, "khong"))
+    else:
+        rows.extend(read_excel_rows(args.excel))
     rows = attach_image_paths(rows, image_root)
     fold_rows = assign_group_folds(rows, args.folds, args.val_ratio, args.seed)
 
