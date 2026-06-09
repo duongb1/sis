@@ -6,16 +6,19 @@ import sys
 from pathlib import Path
 
 
+DEFAULT_KAGGLE_MRI_ROOT = "/kaggle/input/datasets/duongbui/siscth/mri"
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Run 5-fold MRI 3-class training.")
-    parser.add_argument("--folds-csv", default="mri_3class_folds.csv")
-    parser.add_argument("--output-dir", default="outputs/mri_3class_5fold")
+    parser.add_argument("--folds-csv", default=f"{DEFAULT_KAGGLE_MRI_ROOT}/mri_3class_folds.csv")
+    parser.add_argument("--image-root", default=f"{DEFAULT_KAGGLE_MRI_ROOT}/images")
+    parser.add_argument("--output-dir", default="/kaggle/working/mri_3class_5fold")
     parser.add_argument("--folds", type=int, default=5)
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch", type=int, default=4)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--wd", type=float, default=1e-4)
-    parser.add_argument("--model", choices=["resnet18", "resnet34"], default="resnet18")
     parser.add_argument("--pretrained", action="store_true")
     parser.add_argument("--image-size", type=int, default=224)
     parser.add_argument("--max-images-per-case", type=int, default=16)
@@ -33,6 +36,8 @@ def train_command(args, fold, out):
         "train_mri_3class.py",
         "--folds-csv",
         args.folds_csv,
+        "--image-root",
+        args.image_root,
         "--fold-index",
         str(fold),
         "--out",
@@ -45,8 +50,6 @@ def train_command(args, fold, out):
         str(args.lr),
         "--wd",
         str(args.wd),
-        "--model",
-        args.model,
         "--image-size",
         str(args.image_size),
         "--max-images-per-case",
