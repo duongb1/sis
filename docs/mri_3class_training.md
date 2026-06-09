@@ -48,4 +48,4 @@ python run_mri_3class_5fold.py \
   --max-images-per-case 16
 ```
 
-Each case is trained as a bag of MRI slices. A ResNet-50 encoder encodes selected ADC/DWI images and mean-pools image features into one case-level prediction. Metrics include native 3-class accuracy, macro-F1, weighted-F1, balanced accuracy, per-class metrics, confusion matrix, and collapsed `I63` vs `non-I63` metrics.
+Each case is trained as a bag of paired MRI slices. Every model input is a 3-channel tensor where channel 0 is ADC, channel 1 is DWI, and channel 2 is zeros: `[ADC, DWI, 0]`. A ResNet-50 encoder processes the paired slices and mean-pools image features into one case-level prediction. Metrics include native 3-class accuracy, macro-F1, weighted-F1, balanced accuracy, per-class metrics, confusion matrix, and collapsed `I63` vs `non-I63` metrics.
