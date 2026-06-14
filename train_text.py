@@ -347,7 +347,15 @@ def main():
     print(f"Text samples: {len(records)} | Train: {len(train_rows)} | Val: {len(val_rows)} | Test: {len(test_rows)}")
 
     dataset_cls = FieldTextDataset if is_field_aware else TextDataset
-    train_loader = DataLoader(dataset_cls(train_rows, tokenizer, max_len), batch_size=args.batch, shuffle=True, num_workers=args.workers, pin_memory=device.type == "cuda")
+    is_multi_gpu = device.type == "cuda" and not args.no_mgpu and torch.cuda.device_count() > 1
+    train_loader = DataLoader(
+        dataset_cls(train_rows, tokenizer, max_len),
+        batch_size=args.batch,
+        shuffle=True,
+        num_workers=args.workers,
+        pin_memory=device.type == "cuda",
+        drop_last=is_multi_gpu
+    )
     val_loader = DataLoader(dataset_cls(val_rows, tokenizer, max_len), batch_size=args.batch, shuffle=False, num_workers=args.workers, pin_memory=device.type == "cuda")
     test_loader = DataLoader(dataset_cls(test_rows, tokenizer, max_len), batch_size=args.batch, shuffle=False, num_workers=args.workers, pin_memory=device.type == "cuda") if test_rows else None
 

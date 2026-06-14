@@ -293,7 +293,7 @@ def eval_text(model, loader, device, threshold=0.5, desc="Evaluating", label_nam
         inputs.pop("sample_weight", None)
         inputs.pop("multiclass_labels", None)
         labels = inputs["labels"]
-        outputs = model(**inputs)
+        outputs = unwrap(model)(**inputs)
         loss = hf_loss(outputs, labels)
         probs = torch.softmax(_output_logits(outputs), dim=-1)
         if return_field_weights and isinstance(outputs, dict) and outputs.get("field_weights") is not None:
@@ -342,7 +342,7 @@ def eval_multitask(model, loader, device, threshold=0.5, desc="Evaluating", bina
         inputs.pop("multiclass_labels", None)
         labels = inputs["labels"]
         aux_labels = inputs["aux_labels"]
-        outputs = model(**inputs, lambda_aux=lambda_aux)
+        outputs = unwrap(model)(**inputs, lambda_aux=lambda_aux)
         loss = outputs["loss"].mean()
         binary_probs = torch.softmax(outputs["binary_logits"], dim=-1)
         aux_probs = torch.softmax(outputs["aux_logits"], dim=-1)

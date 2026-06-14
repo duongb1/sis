@@ -12,7 +12,6 @@ sislib/reports.py      5-fold aggregation, summary CSV/JSON, threshold and compa
 sislib/runner_utils.py subprocess runner helpers with PYTHONPATH handling
 sislib/text_data.py    backward-compatible text/Excel dataset API
 sislib/text_train.py   PhoBERT model classes and train/eval loops
-sislib/clinical_*      clinical concept extraction, graph construction, and graph/fusion models
 ```
 
 Experiment scripts stay at repo root and should reuse these shared modules instead of duplicating label, split, or report logic.
@@ -41,6 +40,53 @@ LYDO, HB_BENHLY, HB_BANTHAN, HB_GIADINH, KB_TOANTHAN, KB_BOPHAN
 ```
 
 `STT` is ignored. `LABEL` is not used as text input.
+
+Processed CSV input is also supported:
+
+```text
+processed_700.csv
+processed_9937.csv
+```
+
+Required columns:
+
+```text
+Input_Text, Label
+```
+
+`Label=1` is mapped to `co`; `Label=0` is mapped to `khong`.
+
+## Processed Binary Protocol
+
+Run the requested processed CSV protocol:
+
+```bash
+python run_processed_binary_protocol.py \
+  --small-csv processed_700.csv \
+  --large-csv processed_9937.csv \
+  --output-dir processed_binary_protocol_outputs
+```
+
+This runner trains:
+
+```text
+model_1_processed_700_5fold
+  5-fold binary classification on processed_700, train/val/test = 70/10/20.
+
+model_2_processed_9937_random
+  Single random binary split on processed_9937, train/val/test = 70/10/20.
+  Also evaluates the trained large model on all processed_700.
+
+model_3_large_to_small_finetune_5fold
+  Starts from the model_2 large checkpoint, then fine-tunes on each processed_700 train fold and tests the matching fold.
+```
+
+The 5-fold runs write Mean +/- Std reports to:
+
+```text
+processed_binary_protocol_outputs/model_1_processed_700_5fold/summary_5fold.csv
+processed_binary_protocol_outputs/model_3_large_to_small_finetune_5fold/summary_5fold.csv
+```
 
 Multiclass labels are mapped in code without changing the Excel files:
 
@@ -122,50 +168,6 @@ fasttext_multiclass_to_binary_chief_exam
 ```
 
 It stratifies folds by the 3-class `LABEL` schema and writes `train.txt`, `val.txt`, `test.txt`, `model.bin`, and `metrics.json` under each model/fold directory.
-
-## Clinical Concept Graph
-
-Run the sample-level clinical concept graph comparison:
-
-```bash
-pip install torch_geometric
-python run_small_clinical_graph_compare.py \
-  --excel-root /kaggle/input/datasets/duongbui/siscth \
-  --output-dir /kaggle/working/sis_excel_5fold_clinical_graph_mcstrat \
-  --model vinai/phobert-base \
-  --epochs 8 \
-  --batch 16 \
-  --lr 2e-5 \
-  --wd 0.01 \
-  --warmup 0.1 \
-  --max-len 512 \
-  --accum 1 \
-  --seed 42 \
-  --threshold 0.5 \
-  --thresholds 0.30,0.35,0.40,0.45,0.50 \
-  --pooling attention \
-  --workers 0 \
-  --folds 5 \
-  --val-ratio 0.1 \
-  --test-ratio 0.2 \
-  --graph-hidden-dim 64 \
-  --graph-layers 2 \
-  --graph-dropout 0.2 \
-  --graph-heads 2 \
-  --graph-conv gat \
-  --graph-pooling patient \
-  --concept-fields all_fields
-```
-
-Models:
-
-```text
-small_binary_attnpool
-small_concept_graph_only
-small_phobert_attnpool_clinical_graph_fusion
-```
-
-Each fold saves `best.pt`, `metrics.json`, and `concept_stats.json`. This is a sample-level clinical concept graph, not a corpus-level TextGCN.
 
 ## Large Comparison
 

@@ -185,7 +185,8 @@ class CaseMeanPoolCNN(nn.Module):
 class CaseMeanPoolDP(nn.Module):
     def __init__(self, base_model):
         super().__init__()
-        self.backbone = nn.DataParallel(base_model.backbone)
+        from sislib.common import AutocastDPWrapper
+        self.backbone = nn.DataParallel(AutocastDPWrapper(base_model.backbone))
         self.classifier = base_model.classifier
 
     def forward(self, images, lengths):

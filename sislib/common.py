@@ -65,8 +65,28 @@ def get_device(force_cpu=False):
     return torch.device("cuda")
 
 
+class AutocastDPWrapper(torch.nn.Module):
+    def __init__(self, module):
+        super().__init__()
+        self.module = module
+
+    def forward(self, *args, **kwargs):
+        is_cuda = False
+        if args:
+            is_cuda = any(isinstance(x, torch.Tensor) and x.is_cuda for x in args)
+        if not is_cuda and kwargs:
+            is_cuda = any(isinstance(x, torch.Tensor) and x.is_cuda for x in kwargs.values())
+        device_type = "cuda" if is_cuda else "cpu"
+        with torch.amp.autocast(device_type, enabled=is_cuda):
+            return self.module(*args, **kwargs)
+
+
 def unwrap(model):
-    return model.module if isinstance(model, torch.nn.DataParallel) else model
+    if isinstance(model, torch.nn.DataParallel):
+        model = model.module
+    if isinstance(model, AutocastDPWrapper):
+        model = model.module
+    return model
 
 
 def to_device(model, device, multi_gpu=True):
@@ -74,7 +94,7 @@ def to_device(model, device, multi_gpu=True):
     if device.type == "cuda" and multi_gpu and torch.cuda.device_count() > 1:
         ids = list(range(torch.cuda.device_count()))
         print(f"Using DataParallel on GPU ids: {ids}")
-        model = torch.nn.DataParallel(model, device_ids=ids)
+        model = torch.nn.DataParallel(AutocastDPWrapper(model), device_ids=ids)
     return model
 
 
