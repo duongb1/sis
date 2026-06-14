@@ -155,6 +155,34 @@ def main():
     if not args.dry_run:
         output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Check if processed CSVs exist; if not, run preprocess.py automatically
+    small_csv_path = Path(args.small_csv)
+    if not small_csv_path.exists():
+        small_csv_path = ROOT / args.small_csv
+
+    large_csv_path = Path(args.large_csv)
+    if not large_csv_path.exists():
+        large_csv_path = ROOT / args.large_csv
+
+    if not args.dry_run and (not small_csv_path.exists() or not large_csv_path.exists()):
+        # If the user is using the default filenames, try to generate them using preprocess.py
+        if args.small_csv == "processed_700.csv" or args.large_csv == "processed_9937.csv":
+            preprocess_script = ROOT / "preprocess.py"
+            if preprocess_script.exists():
+                print("Preprocessed CSV files not found. Running preprocess.py...")
+                import subprocess
+                subprocess.run([sys.executable, str(preprocess_script)], check=True, cwd=ROOT)
+                # Re-check paths after preprocessing
+                if not (ROOT / args.small_csv).exists() or not (ROOT / args.large_csv).exists():
+                    print("Error: Preprocessing completed but CSV files are still missing.", file=sys.stderr)
+                    sys.exit(1)
+            else:
+                print(f"Error: Preprocessed CSV files not found and {preprocess_script} is missing.", file=sys.stderr)
+                sys.exit(1)
+        else:
+            print(f"Error: The specified CSV files do not exist:\n  - Small: {args.small_csv}\n  - Large: {args.large_csv}", file=sys.stderr)
+            sys.exit(1)
+
     print("Protocol:")
     print("model_1 processed_700: 5-fold, train/val/test = 7/1/2, report mean +/- std.")
     print("model_2 processed_9937: random train/val/test = 7/1/2, no 5-fold.")
