@@ -45,6 +45,33 @@ def is_excel_data(data):
     return bool(_excel_paths(data))
 
 
+def is_processed_csv_data(data):
+    paths = _processed_csv_paths(data)
+    if not paths:
+        return False
+    for path in paths:
+        with open(path, "r", newline="", encoding="utf-8-sig") as f:
+            reader = csv.DictReader(f)
+            fields = set(reader.fieldnames or [])
+        if {"Input_Text", "Label"}.issubset(fields):
+            return True
+    return False
+
+
+def _processed_csv_paths(data):
+    paths = []
+    for item in str(data).split(","):
+        item = item.strip()
+        if not item:
+            continue
+        path = Path(item)
+        if path.is_file() and path.suffix.lower() == ".csv":
+            paths.append(path)
+        elif path.is_dir():
+            paths.extend(sorted(p for p in path.glob("*.csv") if not p.name.startswith("._")))
+    return sorted(dict.fromkeys(paths))
+
+
 def _read_excel(path):
     try:
         import pandas as pd
@@ -65,6 +92,15 @@ def _clean_cell(value):
         pass
     text = str(value).strip()
     return "" if text.lower() == "nan" else text
+
+
+def _processed_label_name(value):
+    label = _clean_cell(value).lower()
+    if label in {"1", "1.0", "co", "yes", "true", "i63", "i63_infarction"}:
+        return "co"
+    if label in {"0", "0.0", "khong", "không", "no", "false", "non_i63"}:
+        return "khong"
+    raise ValueError(f"Unsupported processed CSV binary label: {value!r}")
 
 
 def _label_from_excel_filename(path):
@@ -120,6 +156,12 @@ def _split_by_label(records, seed=42, val_ratio=0.1, test_ratio=0.1):
                 row["split"] = "val"
             else:
                 row["split"] = "train"
+    return records
+
+
+def _assign_single_split(records, split_name="eval"):
+    for record in records:
+        record["split"] = split_name
     return records
 
 
@@ -231,6 +273,94 @@ def collect_excel_text(
 
     data_text = str(data)
     root = Path(data_text.split(",")[0]).parent if "," in data_text else Path(data_text)
+    return records, skipped, root
+
+
+def discover_processed_csv_labels(data):
+    labels = set()
+    for path in _processed_csv_paths(data):
+        with open(path, "r", newline="", encoding="utf-8-sig") as f:
+            reader = csv.DictReader(f)
+            if not {"Input_Text", "Label"}.issubset(set(reader.fieldnames or [])):
+                continue
+            for row in reader:
+                labels.add(_processed_label_name(row.get("Label")))
+    return [label for label in ["khong", "co"] if label in labels]
+
+
+def collect_processed_csv_text(
+    data,
+    labels=None,
+    label_to_id=None,
+    seed=42,
+    val_ratio=0.1,
+    test_ratio=0.2,
+    split_strategy="random",
+    n_folds=5,
+    fold_index=0,
+    eval_split_name="eval",
+):
+    paths = _processed_csv_paths(data)
+    if not paths:
+        raise FileNotFoundError(f"Cannot find processed CSV files under {data}.")
+    labels = list(labels) if labels is not None else discover_processed_csv_labels(data)
+    if not labels:
+        labels = ["khong", "co"]
+    if label_to_id is None:
+        label_to_id, _ = make_label_maps(labels)
+
+    records, skipped = [], []
+    for path in paths:
+        with open(path, "r", newline="", encoding="utf-8-sig") as f:
+            reader = csv.DictReader(f)
+            missing_columns = [column for column in ["Input_Text", "Label"] if column not in (reader.fieldnames or [])]
+            if missing_columns:
+                raise ValueError(f"{path} is missing required columns: {', '.join(missing_columns)}")
+            for index, row in enumerate(reader, start=2):
+                try:
+                    label_name = _processed_label_name(row.get("Label"))
+                except ValueError as exc:
+                    skipped.append(f"{path}:{index}:{exc}")
+                    continue
+                if label_name not in label_to_id:
+                    skipped.append(f"{path}:{index}:unknown_label:{label_name}")
+                    continue
+                text = _clean_cell(row.get("Input_Text"))
+                if not text:
+                    skipped.append(f"{path}:{index}:empty_text")
+                    continue
+                records.append(
+                    {
+                        "id": f"{path.stem}_{index:06d}",
+                        "split": "",
+                        "label": label_to_id[label_name],
+                        "label_name": label_name,
+                        "text_path": str(path),
+                        "text": text,
+                        "source_file": path.name,
+                        "row_index": index,
+                        "binary_label_name": label_name,
+                    }
+                )
+
+    if split_strategy == "kfold":
+        records = _split_excel_kfold(
+            records,
+            seed=seed,
+            n_folds=n_folds,
+            fold_index=fold_index,
+            val_ratio=val_ratio,
+            split_label="target",
+        )
+    elif split_strategy == "random":
+        records = _split_by_label(records, seed=seed, val_ratio=val_ratio, test_ratio=test_ratio)
+    elif split_strategy in {"eval", "none"}:
+        records = _assign_single_split(records, split_name=eval_split_name)
+    else:
+        raise ValueError(f"Unknown split_strategy: {split_strategy}")
+
+    data_text = str(data)
+    root = Path(data_text.split(",")[0]).parent if "," in data_text else Path(data_text).parent
     return records, skipped, root
 
 

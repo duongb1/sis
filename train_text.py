@@ -23,9 +23,12 @@ from sislib.text_data import (
     TextDataset,
     collect_excel_text,
     collect_large_text,
+    collect_processed_csv_text,
     discover_excel_labels,
+    discover_processed_csv_labels,
     discover_text_labels,
     is_excel_data,
+    is_processed_csv_data,
     make_label_maps,
     parse_labels_arg,
     save_records,
@@ -38,7 +41,7 @@ def parse_args():
     p.add_argument("--data", default="/kaggle/input/datasets/duongb/cthsis/data/texts")
     p.add_argument("--out", default="/kaggle/working/text_phobert_classifier")
     p.add_argument("--model", default="vinai/phobert-base")
-    p.add_argument("--format", choices=["auto", "text", "excel"], default="auto", help="Input format. Excel accepts one .xlsx file, comma-separated .xlsx files, or a folder of .xlsx files.")
+    p.add_argument("--format", choices=["auto", "text", "excel", "processed"], default="auto", help="Input format. processed accepts CSV files with Input_Text and Label columns.")
     p.add_argument("--excel-task", choices=["multiclass", "binary", "multitask"], default="multiclass", help="For Excel input, train on LABEL multi-class targets, co/khong binary targets, or binary + 3-class auxiliary multi-task targets.")
     p.add_argument("--val-ratio", type=float, default=0.1, help="Validation ratio for unsplit Excel input.")
     p.add_argument("--test-ratio", type=float, default=0.1, help="Test ratio for unsplit Excel input.")
@@ -66,6 +69,11 @@ def parse_args():
     p.add_argument("--accum", type=int, default=1)
     p.add_argument("--cpu", action="store_true")
     p.add_argument("--no-mgpu", action="store_true")
+    p.add_argument("--init-checkpoint", default=None, help="Optional checkpoint directory to initialize/fine-tune from.")
+    p.add_argument("--eval-data", action="append", default=[], help="Extra evaluation data as NAME=PATH or PATH. Can be repeated.")
+    p.add_argument("--eval-format", choices=["auto", "text", "excel", "processed"], default="auto")
+    p.add_argument("--eval-split-strategy", choices=["eval", "random", "kfold"], default="eval")
+    p.add_argument("--eval-splits", default="eval", help="Comma-separated splits to evaluate for --eval-data, e.g. eval or val,test.")
     return p.parse_args()
 
 
@@ -181,17 +189,86 @@ def label_distribution(rows, key):
     return dict(sorted(counts.items()))
 
 
+def infer_input_format(data, requested):
+    if requested != "auto":
+        return requested
+    if is_excel_data(data):
+        return "excel"
+    if is_processed_csv_data(data):
+        return "processed"
+    return "text"
+
+
+def collect_records_for_args(args, labels, label_to_id, data=None, input_format=None, split_strategy=None, eval_split_name="eval"):
+    data = args.data if data is None else data
+    input_format = infer_input_format(data, args.format if input_format is None else input_format)
+    split_strategy = args.split_strategy if split_strategy is None else split_strategy
+    if input_format == "excel":
+        return collect_excel_text(
+            data,
+            labels=labels,
+            label_to_id=label_to_id,
+            task=args.excel_task,
+            seed=args.seed,
+            val_ratio=args.val_ratio,
+            test_ratio=args.test_ratio,
+            split_strategy=split_strategy,
+            n_folds=args.n_folds,
+            fold_index=args.fold_index,
+            split_label=args.excel_split_label,
+        )
+    if input_format == "processed":
+        return collect_processed_csv_text(
+            data,
+            labels=labels,
+            label_to_id=label_to_id,
+            seed=args.seed,
+            val_ratio=args.val_ratio,
+            test_ratio=args.test_ratio,
+            split_strategy=split_strategy,
+            n_folds=args.n_folds,
+            fold_index=args.fold_index,
+            eval_split_name=eval_split_name,
+        )
+    if split_strategy not in {"random", "eval"}:
+        raise RuntimeError(f"--split-strategy {split_strategy!r} is not supported for text folder input.")
+    return collect_large_text(data, labels=labels, label_to_id=label_to_id)
+
+
+def parse_eval_data_spec(spec):
+    if "=" in spec:
+        name, path = spec.split("=", 1)
+        return name.strip(), path.strip()
+    path = Path(spec)
+    return path.stem, spec
+
+
+def load_initial_checkpoint(model, checkpoint):
+    checkpoint = Path(checkpoint)
+    state_path = checkpoint / "model.pt"
+    if state_path.exists():
+        model.load_state_dict(torch.load(state_path, map_location="cpu"))
+        return True
+    return False
+
+
 def main():
     args = parse_args()
     seed_all(args.seed)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
 
-    use_excel = args.format == "excel" or (args.format == "auto" and is_excel_data(args.data))
+    input_format = infer_input_format(args.data, args.format)
+    use_excel = input_format == "excel"
+    use_processed = input_format == "processed"
     if use_excel:
         labels = parse_labels_arg(args.labels) or discover_excel_labels(args.data, task=args.excel_task)
         if args.binary_positive_label is None:
             args.binary_positive_label = "co" if args.excel_task == "binary" else "I63_INFARCTION"
+    elif use_processed:
+        labels = parse_labels_arg(args.labels) or discover_processed_csv_labels(args.data)
+        if args.binary_positive_label is None:
+            args.binary_positive_label = "co"
     else:
         labels = parse_labels_arg(args.labels) or discover_text_labels(args.data)
         if args.binary_positive_label is None:
@@ -200,22 +277,7 @@ def main():
         raise RuntimeError(f"Need at least two labels under --data, found: {labels}")
     label_to_id, id_to_label = make_label_maps(labels)
 
-    if use_excel:
-        records, skipped, data_root = collect_excel_text(
-            args.data,
-            labels=labels,
-            label_to_id=label_to_id,
-            task=args.excel_task,
-            seed=args.seed,
-            val_ratio=args.val_ratio,
-            test_ratio=args.test_ratio,
-            split_strategy=args.split_strategy,
-            n_folds=args.n_folds,
-            fold_index=args.fold_index,
-            split_label=args.excel_split_label,
-        )
-    else:
-        records, skipped, data_root = collect_large_text(args.data, labels=labels, label_to_id=label_to_id)
+    records, skipped, data_root = collect_records_for_args(args, labels, label_to_id, input_format=input_format)
     if skipped:
         (out / "skipped_text_files.txt").write_text("\n".join(skipped), encoding="utf-8")
     train_rows, val_rows, test_rows = [split_records(records, s) for s in ("train", "val", "test")]
@@ -235,9 +297,13 @@ def main():
         if args.pooling == "gated":
             raise RuntimeError("--pooling gated is currently supported for --input-mode concat. Use --input-mode concat for gated fusion.")
     device = get_device(args.cpu)
-    tokenizer = AutoTokenizer.from_pretrained(args.model, use_fast=False)
+    tokenizer_source = args.init_checkpoint if args.init_checkpoint and Path(args.init_checkpoint).exists() else args.model
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_source, use_fast=False)
     use_custom_classifier = args.pooling in {"attention", "gated"} and not is_multitask
     aux_labels = list(EXCEL_MULTICLASS_LABELS)
+    hf_model_source = args.model
+    if args.init_checkpoint and not (Path(args.init_checkpoint) / "model.pt").exists() and not (is_field_aware or use_custom_classifier or is_multitask):
+        hf_model_source = args.init_checkpoint
     if is_field_aware:
         model = FieldAwarePhoBERTClassifier(
             args.model,
@@ -255,13 +321,17 @@ def main():
         )
     else:
         model = AutoModelForSequenceClassification.from_pretrained(
-            args.model,
+            hf_model_source,
             num_labels=len(labels),
             id2label=id_to_label,
             label2id=label_to_id,
             ignore_mismatched_sizes=True,
         )
     max_len = resolve_max_len(model, args.max_len_per_field if is_field_aware else args.max_len)
+    if args.init_checkpoint and Path(args.init_checkpoint).exists():
+        loaded_state = load_initial_checkpoint(model, args.init_checkpoint)
+        if loaded_state:
+            print(f"Initialized model weights from {Path(args.init_checkpoint).resolve()}")
     model = to_device(model, device, not args.no_mgpu)
 
     print(f"Data root: {data_root.resolve()}")
@@ -405,7 +475,39 @@ def main():
     else:
         eval_model = to_device(AutoModelForSequenceClassification.from_pretrained(best_dir), device, not args.no_mgpu)
     all_metrics, threshold_sweeps = {}, {}
-    for split, loader in [("val", val_loader), ("test", test_loader)]:
+    eval_loaders = [("val", val_loader), ("test", test_loader)]
+    extra_eval_records = {}
+    for spec in args.eval_data:
+        eval_name, eval_data = parse_eval_data_spec(spec)
+        eval_format = infer_input_format(eval_data, args.eval_format)
+        eval_records, eval_skipped, _ = collect_records_for_args(
+            args,
+            labels,
+            label_to_id,
+            data=eval_data,
+            input_format=eval_format,
+            split_strategy=args.eval_split_strategy,
+            eval_split_name="eval",
+        )
+        if eval_skipped:
+            (out / f"skipped_{eval_name}_files.txt").write_text("\n".join(eval_skipped), encoding="utf-8")
+        wanted_splits = [item.strip() for item in args.eval_splits.split(",") if item.strip()]
+        for split_name in wanted_splits:
+            rows = split_records(eval_records, split_name)
+            if not rows:
+                continue
+            extra_eval_records[f"{eval_name}_{split_name}"] = rows
+            eval_loaders.append(
+                (
+                    f"{eval_name}_{split_name}",
+                    DataLoader(dataset_cls(rows, tokenizer, max_len), batch_size=args.batch, shuffle=False, num_workers=args.workers, pin_memory=device.type == "cuda"),
+                )
+            )
+    if extra_eval_records:
+        print("Extra evaluation splits:")
+        for split_name, rows in extra_eval_records.items():
+            print(f"{split_name}: {len(rows)}")
+    for split, loader in eval_loaders:
         if loader is None:
             continue
         if is_multitask:
@@ -453,10 +555,11 @@ def main():
             all_metrics[split] = round_metrics(metrics)
             threshold_sweeps[split] = {}
             for threshold in parse_thresholds(args.thresholds, args.threshold):
+                sweep_pred = (p[:, 1] >= threshold).astype(np.int64) if p.ndim == 2 and p.shape[1] == 2 else pred
                 sweep_metrics = cls_metrics(
                     y,
                     p,
-                    pred,
+                    sweep_pred,
                     threshold=threshold,
                     label_names=labels,
                     binary_positive_label=args.binary_positive_label,
