@@ -142,17 +142,4 @@ def format_metrics_summary(name, metrics):
         f"f1_weighted={metrics.get('f1_weighted', float('nan'))}",
         f"auc={metrics.get('auc', float('nan'))}",
     ]
-    lines = [" ".join(str(part) for part in parts)]
-    binary = metrics.get("binary_i63")
-    if binary:
-        lines.append(
-            "binary_i63: "
-            f"acc={binary.get('accuracy')} "
-            f"f1={binary.get('f1')} "
-            f"auc={binary.get('auc')} "
-            f"sens={binary.get('sensitivity')} "
-            f"spec={binary.get('specificity')} "
-            f"bal_acc={binary.get('balanced_accuracy')} "
-            f"cm={binary.get('confusion_matrix')}"
-        )
-    return "\n".join(lines)
+    return " ".join(str(part) for part in parts)
