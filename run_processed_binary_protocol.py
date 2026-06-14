@@ -1,5 +1,7 @@
 import argparse
 import sys
+import json
+import numpy as np
 from pathlib import Path
 
 from sislib.reports import aggregate_experiment
@@ -225,6 +227,209 @@ def main():
         )
     if not args.dry_run:
         aggregate_experiment(output_dir, "model_3_large_to_small_finetune_5fold", args.folds)
+        print_protocol_summary_report(output_dir, args.folds)
+
+
+def print_protocol_summary_report(output_dir, folds):
+    output_dir = Path(output_dir)
+    
+    def load_json(path):
+        if not path.exists():
+            return None
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return None
+
+    def get_binary_metrics(split_data):
+        if not split_data:
+            return None
+        if isinstance(split_data, dict) and "binary_i63" in split_data:
+            metrics = dict(split_data["binary_i63"])
+        else:
+            metrics = dict(split_data)
+        
+        # Ensure balanced accuracy is present
+        if "balanced_accuracy" not in metrics and "sensitivity" in metrics and "specificity" in metrics:
+            sens = metrics.get("sensitivity")
+            spec = metrics.get("specificity")
+            if sens is not None and spec is not None and not np.isnan(sens) and not np.isnan(spec):
+                metrics["balanced_accuracy"] = float((sens + spec) / 2.0)
+            else:
+                metrics["balanced_accuracy"] = float("nan")
+        return metrics
+
+    def get_fold_stats(parent_folder, split_key):
+        accuracy_list = []
+        f1_list = []
+        auc_list = []
+        sens_list = []
+        spec_list = []
+        bal_acc_list = []
+        
+        for fold in range(folds):
+            path = output_dir / parent_folder / f"fold_{fold}" / "metrics.json"
+            data = load_json(path)
+            if data:
+                metrics = get_binary_metrics(data.get(split_key))
+                if metrics:
+                    if metrics.get("accuracy") is not None:
+                        accuracy_list.append(metrics.get("accuracy"))
+                    if metrics.get("f1") is not None:
+                        f1_list.append(metrics.get("f1"))
+                    if metrics.get("auc") is not None:
+                        auc_list.append(metrics.get("auc"))
+                    if metrics.get("sensitivity") is not None:
+                        sens_list.append(metrics.get("sensitivity"))
+                    if metrics.get("specificity") is not None:
+                        spec_list.append(metrics.get("specificity"))
+                    if metrics.get("balanced_accuracy") is not None:
+                        bal_acc_list.append(metrics.get("balanced_accuracy"))
+        
+        def mean_std(lst):
+            vals = [v for v in lst if v is not None and not np.isnan(v)]
+            if not vals:
+                return None
+            return np.mean(vals), np.std(vals)
+            
+        return {
+            "accuracy": mean_std(accuracy_list),
+            "f1": mean_std(f1_list),
+            "auc": mean_std(auc_list),
+            "sensitivity": mean_std(sens_list),
+            "specificity": mean_std(spec_list),
+            "balanced_accuracy": mean_std(bal_acc_list),
+        }
+
+    # Load Model 2
+    model2_path = output_dir / "model_2_processed_9937_random" / "metrics.json"
+    model2_data = load_json(model2_path)
+    model2_test = get_binary_metrics(model2_data.get("test")) if model2_data else None
+    model2_cross = get_binary_metrics(model2_data.get("processed_700_all_eval")) if model2_data else None
+
+    # Load Model 1
+    model1_stats = get_fold_stats("model_1_processed_700_5fold", "test")
+    model1_cross_val = get_fold_stats("model_1_processed_700_5fold", "processed_9937_random_val")
+    model1_cross_test = get_fold_stats("model_1_processed_700_5fold", "processed_9937_random_test")
+
+    # Load Model 3
+    model3_stats = get_fold_stats("model_3_large_to_small_finetune_5fold", "test")
+
+    print("\n" + "=" * 80)
+    print("                      FINAL PROTOCOL SUMMARY REPORT")
+    print("=" * 80)
+
+    # PART 1
+    print("\nPART 1: Model 1 (Processed 700 - 5-Fold)")
+    print("-" * 80)
+    print("Reported on Held-Out Test Fold (mean ± std over 5 folds):")
+    for metric_name, key in [
+        ("Accuracy", "accuracy"),
+        ("F1-score", "f1"),
+        ("AUC", "auc"),
+        ("Sensitivity", "sensitivity"),
+        ("Specificity", "specificity"),
+        ("Balanced Accuracy", "balanced_accuracy"),
+    ]:
+        val = model1_stats.get(key)
+        if val and val[0] is not None:
+            print(f"- {metric_name:<19}: {val[0]*100:>6.2f}% ± {val[1]*100:.2f}%")
+        else:
+            print(f"- {metric_name:<19}: N/A")
+
+    # PART 2
+    print("\nPART 2: Model 2 (Processed 9937 - Random Split)")
+    print("-" * 80)
+    print("Reported on Test Split (single run):")
+    if model2_test:
+        for metric_name, key in [
+            ("Accuracy", "accuracy"),
+            ("F1-score", "f1"),
+            ("AUC", "auc"),
+            ("Sensitivity", "sensitivity"),
+            ("Specificity", "specificity"),
+            ("Balanced Accuracy", "balanced_accuracy"),
+        ]:
+            val = model2_test.get(key)
+            if val is not None and not np.isnan(val):
+                print(f"- {metric_name:<19}: {val*100:>6.2f}%")
+            else:
+                print(f"- {metric_name:<19}: N/A")
+    else:
+        print("Metrics file not found or empty.")
+
+    # PART 3
+    print("\nPART 3: Cross Evaluation")
+    print("-" * 80)
+    print("A) Model 2 evaluated on ALL Processed 700 (single run):")
+    if model2_cross:
+        for metric_name, key in [
+            ("Accuracy", "accuracy"),
+            ("F1-score", "f1"),
+            ("AUC", "auc"),
+            ("Sensitivity", "sensitivity"),
+            ("Specificity", "specificity"),
+            ("Balanced Accuracy", "balanced_accuracy"),
+        ]:
+            val = model2_cross.get(key)
+            if val is not None and not np.isnan(val):
+                print(f"- {metric_name:<19}: {val*100:>6.2f}%")
+            else:
+                print(f"- {metric_name:<19}: N/A")
+    else:
+        print("Metrics file not found or empty.")
+
+    print("\nB) Model 1 folds evaluated on Model 2 splits (mean ± std over 5 folds):")
+    print("* On Model 2 Validation Split:")
+    for metric_name, key in [
+        ("Accuracy", "accuracy"),
+        ("F1-score", "f1"),
+        ("AUC", "auc"),
+        ("Sensitivity", "sensitivity"),
+        ("Specificity", "specificity"),
+        ("Balanced Accuracy", "balanced_accuracy"),
+    ]:
+        val = model1_cross_val.get(key)
+        if val and val[0] is not None:
+            print(f"  - {metric_name:<17}: {val[0]*100:>6.2f}% ± {val[1]*100:.2f}%")
+        else:
+            print(f"  - {metric_name:<17}: N/A")
+
+    print("* On Model 2 Test Split:")
+    for metric_name, key in [
+        ("Accuracy", "accuracy"),
+        ("F1-score", "f1"),
+        ("AUC", "auc"),
+        ("Sensitivity", "sensitivity"),
+        ("Specificity", "specificity"),
+        ("Balanced Accuracy", "balanced_accuracy"),
+    ]:
+        val = model1_cross_test.get(key)
+        if val and val[0] is not None:
+            print(f"  - {metric_name:<17}: {val[0]*100:>6.2f}% ± {val[1]*100:.2f}%")
+        else:
+            print(f"  - {metric_name:<17}: N/A")
+
+    # PART 4
+    print("\nPART 4: Model 3 (Fine-tuned Model 2 Checkpoint on Processed 700 Folds)")
+    print("-" * 80)
+    print("Reported on Held-Out Test Fold (mean ± std over 5 folds):")
+    for metric_name, key in [
+        ("Accuracy", "accuracy"),
+        ("F1-score", "f1"),
+        ("AUC", "auc"),
+        ("Sensitivity", "sensitivity"),
+        ("Specificity", "specificity"),
+        ("Balanced Accuracy", "balanced_accuracy"),
+    ]:
+        val = model3_stats.get(key)
+        if val and val[0] is not None:
+            print(f"- {metric_name:<19}: {val[0]*100:>6.2f}% ± {val[1]*100:.2f}%")
+        else:
+            print(f"- {metric_name:<19}: N/A")
+
+    print("\n" + "=" * 80)
 
 
 if __name__ == "__main__":
