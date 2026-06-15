@@ -315,6 +315,8 @@ def print_protocol_summary_report(output_dir, folds):
 
     # Load Model 3
     model3_stats = get_fold_stats("model_3_large_to_small_finetune_5fold", "test")
+    model3_cross_val = get_fold_stats("model_3_large_to_small_finetune_5fold", "processed_9937_random_val")
+    model3_cross_test = get_fold_stats("model_3_large_to_small_finetune_5fold", "processed_9937_random_test")
 
     print("\n" + "=" * 80)
     print("                      FINAL PROTOCOL SUMMARY REPORT")
@@ -424,6 +426,36 @@ def print_protocol_summary_report(output_dir, folds):
         ("Balanced Accuracy", "balanced_accuracy"),
     ]:
         val = model3_stats.get(key)
+        if val and val[0] is not None:
+            print(f"- {metric_name:<19}: {val[0]*100:>6.2f}% ± {val[1]*100:.2f}%")
+        else:
+            print(f"- {metric_name:<19}: N/A")
+
+    print("\nReported on Model 2 Validation Split (mean ± std over 5 folds):")
+    for metric_name, key in [
+        ("Accuracy", "accuracy"),
+        ("F1-score", "f1"),
+        ("AUC", "auc"),
+        ("Sensitivity", "sensitivity"),
+        ("Specificity", "specificity"),
+        ("Balanced Accuracy", "balanced_accuracy"),
+    ]:
+        val = model3_cross_val.get(key)
+        if val and val[0] is not None:
+            print(f"- {metric_name:<19}: {val[0]*100:>6.2f}% ± {val[1]*100:.2f}%")
+        else:
+            print(f"- {metric_name:<19}: N/A")
+
+    print("\nReported on Model 2 Test Split (mean ± std over 5 folds):")
+    for metric_name, key in [
+        ("Accuracy", "accuracy"),
+        ("F1-score", "f1"),
+        ("AUC", "auc"),
+        ("Sensitivity", "sensitivity"),
+        ("Specificity", "specificity"),
+        ("Balanced Accuracy", "balanced_accuracy"),
+    ]:
+        val = model3_cross_test.get(key)
         if val and val[0] is not None:
             print(f"- {metric_name:<19}: {val[0]*100:>6.2f}% ± {val[1]*100:.2f}%")
         else:
