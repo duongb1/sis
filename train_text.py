@@ -17,7 +17,6 @@ from transformers import AutoModelForSequenceClassification, AutoTokenizer, get_
 from sislib.common import get_device, resolve_max_len, round_float, round_metrics, seed_all, split_records, to_device, unwrap
 from sislib.metrics import cls_metrics, format_metrics_summary, save_preds
 from sislib.text_data import (
-    EXCEL_MULTICLASS_LABELS,
     EXCEL_TEXT_COLUMNS,
     FieldTextDataset,
     TextDataset,
@@ -33,7 +32,7 @@ from sislib.text_data import (
     parse_labels_arg,
     save_records,
 )
-from sislib.text_train import FieldAwarePhoBERTClassifier, PhoBERTClassifier, PhoBERTMultiTask, ce_epoch, eval_multitask, eval_text, multitask_epoch
+from sislib.text_train import FieldAwarePhoBERTClassifier, PhoBERTClassifier, ce_epoch, eval_text
 
 
 def parse_args():
@@ -42,15 +41,15 @@ def parse_args():
     p.add_argument("--out", default="/kaggle/working/text_phobert_classifier")
     p.add_argument("--model", default="vinai/phobert-base")
     p.add_argument("--format", choices=["auto", "text", "excel", "processed"], default="auto", help="Input format. processed accepts CSV files with Input_Text and Label columns.")
-    p.add_argument("--excel-task", choices=["multiclass", "binary", "multitask"], default="multiclass", help="For Excel input, train on LABEL multi-class targets, co/khong binary targets, or binary + 3-class auxiliary multi-task targets.")
+    p.add_argument("--excel-task", choices=["binary"], default="binary", help="For Excel input, train on co/khong binary targets.")
     p.add_argument("--val-ratio", type=float, default=0.1, help="Validation ratio for unsplit Excel input.")
     p.add_argument("--test-ratio", type=float, default=0.1, help="Test ratio for unsplit Excel input.")
     p.add_argument("--split-strategy", choices=["random", "kfold"], default="random", help="Excel split strategy. kfold uses one fold as 20%% test when --n-folds 5.")
     p.add_argument("--n-folds", type=int, default=5, help="Number of folds for --split-strategy kfold.")
     p.add_argument("--fold-index", type=int, default=0, help="Zero-based held-out test fold for --split-strategy kfold.")
-    p.add_argument("--excel-split-label", choices=["target", "binary", "multiclass"], default="multiclass", help="Label source used only to stratify Excel kfold splits.")
+    p.add_argument("--excel-split-label", choices=["target", "binary"], default="binary", help="Label source used only to stratify Excel kfold splits.")
     p.add_argument("--labels", default=None, help="Comma-separated class names. Defaults to CSV/file labels discovered under --data.")
-    p.add_argument("--binary-positive-label", default=None, help="Class treated as positive for one-vs-rest binary metrics. Defaults to I63_INFARCTION, or co for --excel-task binary.")
+    p.add_argument("--binary-positive-label", default=None, help="Class treated as positive for one-vs-rest binary metrics. Defaults to co.")
     p.add_argument("--max-len", type=int, default=512)
     p.add_argument("--batch", type=int, default=16)
     p.add_argument("--epochs", type=int, default=8)
@@ -59,7 +58,7 @@ def parse_args():
     p.add_argument("--warmup", type=float, default=0.1)
     p.add_argument("--threshold", type=float, default=0.5)
     p.add_argument("--thresholds", default=None, help="Comma-separated thresholds for binary_positive_label metrics, e.g. 0.30,0.35,0.40,0.45,0.50.")
-    p.add_argument("--lambda-aux", "--aux-weight", dest="lambda_aux", type=float, default=0.5, help="Auxiliary 3-class loss weight for --excel-task multitask.")
+
     p.add_argument("--pooling", choices=["cls", "attention", "gated"], default="cls", help="Pooling method after PhoBERT encoder. cls uses the first-token representation, attention learns token-level attention pooling, and gated fuses CLS with attention pooling.")
     p.add_argument("--input-mode", choices=["concat", "field"], default="concat", help="Input representation mode: concat all fields or encode Excel fields separately.")
     p.add_argument("--max-len-per-field", type=int, default=128, help="Maximum token length for each clinical field when --input-mode field.")
@@ -89,9 +88,7 @@ def model_config_metadata(args):
     config = {
         "pooling": args.pooling,
         "fusion": fusion,
-        "aux_weight": args.lambda_aux if args.excel_task == "multitask" else None,
-        "primary_task": "binary_i63" if args.excel_task == "multitask" else args.excel_task,
-        "aux_task": "3class_disease_structure" if args.excel_task == "multitask" else None,
+        "primary_task": args.excel_task,
     }
     return {key: value for key, value in config.items() if value is not None}
 
@@ -130,11 +127,10 @@ def save_model(model, tokenizer, path, epoch, metrics, args, max_len, labels, la
         )
 
 
-def save_state_dict_model(model, tokenizer, path, epoch, metrics, args, max_len, labels, label_to_id, aux_labels=None, best_model_metric="auc"):
+def save_state_dict_model(model, tokenizer, path, epoch, metrics, args, max_len, labels, label_to_id, best_model_metric="auc"):
     path.mkdir(parents=True, exist_ok=True)
     torch.save(unwrap(model).state_dict(), path / "model.pt")
     tokenizer.save_pretrained(path)
-    aux_labels = list(aux_labels or [])
     with open(path / "training_info.json", "w", encoding="utf-8") as f:
         info = {
                 "epoch": epoch,
@@ -158,15 +154,6 @@ def save_state_dict_model(model, tokenizer, path, epoch, metrics, args, max_len,
                 "test_ratio": args.test_ratio,
                 "model_config": model_config_metadata(args),
         }
-        if aux_labels:
-            info.update(
-                {
-                    "aux_labels": aux_labels,
-                    "aux_label_to_id": {label: index for index, label in enumerate(aux_labels)},
-                    "aux_id_to_label": {str(index): label for index, label in enumerate(aux_labels)},
-                    "lambda_aux": args.lambda_aux,
-                }
-            )
         json.dump(info, f, ensure_ascii=False, indent=2)
 
 
@@ -262,9 +249,9 @@ def main():
     use_excel = input_format == "excel"
     use_processed = input_format == "processed"
     if use_excel:
-        labels = parse_labels_arg(args.labels) or discover_excel_labels(args.data, task=args.excel_task)
+        labels = parse_labels_arg(args.labels) or discover_excel_labels(args.data, task="binary")
         if args.binary_positive_label is None:
-            args.binary_positive_label = "co" if args.excel_task == "binary" else "I63_INFARCTION"
+            args.binary_positive_label = "co"
     elif use_processed:
         labels = parse_labels_arg(args.labels) or discover_processed_csv_labels(args.data)
         if args.binary_positive_label is None:
@@ -272,7 +259,7 @@ def main():
     else:
         labels = parse_labels_arg(args.labels) or discover_text_labels(args.data)
         if args.binary_positive_label is None:
-            args.binary_positive_label = "I63_INFARCTION"
+            args.binary_positive_label = "co"
     if len(labels) < 2:
         raise RuntimeError(f"Need at least two labels under --data, found: {labels}")
     label_to_id, id_to_label = make_label_maps(labels)
@@ -286,23 +273,19 @@ def main():
     if use_excel:
         print(f"Excel split stratify label: {args.excel_split_label}")
         for split_name, rows in [("train", train_rows), ("val", val_rows), ("test", test_rows)]:
-            print(f"{split_name} multiclass distribution: {label_distribution(rows, 'multiclass_label_name')}")
-    is_multitask = use_excel and args.excel_task == "multitask"
+            print(f"{split_name} label distribution: {label_distribution(rows, 'label_name')}")
     is_field_aware = args.input_mode == "field"
     if args.input_mode == "field":
         if not use_excel:
             raise RuntimeError("--input-mode field is currently supported only for Excel input.")
-        if args.excel_task == "multitask":
-            raise RuntimeError("--input-mode field is currently supported for binary/multiclass Excel tasks, not multitask.")
         if args.pooling == "gated":
             raise RuntimeError("--pooling gated is currently supported for --input-mode concat. Use --input-mode concat for gated fusion.")
     device = get_device(args.cpu)
     tokenizer_source = args.init_checkpoint if args.init_checkpoint and Path(args.init_checkpoint).exists() else args.model
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_source, use_fast=False)
-    use_custom_classifier = args.pooling in {"attention", "gated"} and not is_multitask
-    aux_labels = list(EXCEL_MULTICLASS_LABELS)
+    use_custom_classifier = args.pooling in {"attention", "gated"}
     hf_model_source = args.model
-    if args.init_checkpoint and not (Path(args.init_checkpoint) / "model.pt").exists() and not (is_field_aware or use_custom_classifier or is_multitask):
+    if args.init_checkpoint and not (Path(args.init_checkpoint) / "model.pt").exists() and not (is_field_aware or use_custom_classifier):
         hf_model_source = args.init_checkpoint
     if is_field_aware:
         model = FieldAwarePhoBERTClassifier(
@@ -311,8 +294,6 @@ def main():
             num_fields=len(EXCEL_TEXT_COLUMNS),
             pooling=args.pooling,
         )
-    elif is_multitask:
-        model = PhoBERTMultiTask(args.model, pooling=args.pooling)
     elif use_custom_classifier:
         model = PhoBERTClassifier(
             args.model,
@@ -336,10 +317,6 @@ def main():
 
     print(f"Data root: {data_root.resolve()}")
     print(f"Labels ({len(labels)}): {', '.join(labels)}")
-    if is_multitask:
-        print(f"Primary labels ({len(labels)}): {', '.join(labels)}")
-        print(f"Aux labels ({len(aux_labels)}): {', '.join(aux_labels)}")
-        print(f"Multi-task loss: loss = loss_binary + {args.lambda_aux:g} * loss_aux")
     print(f"Input mode: {args.input_mode}")
     print(f"Pooling: {args.pooling}")
     if args.pooling == "gated":
@@ -366,41 +343,25 @@ def main():
 
     best, best_dir, history = -1.0, out / "best_auc_phobert", []
     for epoch in range(1, args.epochs + 1):
-        if is_multitask:
-            train_loss = multitask_epoch(model, train_loader, opt, sched, scaler, device, args.accum, args.lambda_aux)
-            val_metrics, val_ids, val_y, val_p, val_pred, val_aux_y, val_aux_p, val_aux_pred = eval_multitask(
-                model,
-                val_loader,
-                device,
-                args.threshold,
-                binary_label_names=labels,
-                aux_label_names=aux_labels,
-                lambda_aux=args.lambda_aux,
-            )
-            primary_val = val_metrics["primary_binary"]
-            val_score = primary_val["auc"]
-            if np.isnan(val_score):
-                val_score = primary_val["f1_macro"]
+        train_loss = ce_epoch(model, train_loader, opt, sched, scaler, device, args.accum)
+        eval_result = eval_text(
+            model,
+            val_loader,
+            device,
+            args.threshold,
+            label_names=labels,
+            binary_positive_label=args.binary_positive_label,
+            return_field_weights=is_field_aware and args.save_field_attention,
+        )
+        if is_field_aware and args.save_field_attention:
+            val_metrics, val_ids, val_y, val_p, val_pred, val_field_weights = eval_result
         else:
-            train_loss = ce_epoch(model, train_loader, opt, sched, scaler, device, args.accum)
-            eval_result = eval_text(
-                model,
-                val_loader,
-                device,
-                args.threshold,
-                label_names=labels,
-                binary_positive_label=args.binary_positive_label,
-                return_field_weights=is_field_aware and args.save_field_attention,
-            )
-            if is_field_aware and args.save_field_attention:
-                val_metrics, val_ids, val_y, val_p, val_pred, val_field_weights = eval_result
-            else:
-                val_metrics, val_ids, val_y, val_p, val_pred = eval_result
-                val_field_weights = None
-            primary_val = val_metrics
-            val_score = val_metrics["auc"]
-            if np.isnan(val_score):
-                val_score = val_metrics["f1_macro"]
+            val_metrics, val_ids, val_y, val_p, val_pred = eval_result
+            val_field_weights = None
+        primary_val = val_metrics
+        val_score = val_metrics["auc"]
+        if np.isnan(val_score):
+            val_score = val_metrics["f1_macro"]
         history.append({
             "epoch": epoch,
             "train_loss": round_float(train_loss),
@@ -418,11 +379,7 @@ def main():
         )
         if val_score > best:
             best = val_score
-            if is_multitask:
-                save_state_dict_model(model, tokenizer, best_dir, epoch, val_metrics, args, max_len, labels, label_to_id, aux_labels, best_model_metric="primary_binary_auc")
-                save_preds(out / "val_predictions_best_auc.csv", val_ids, val_y, val_p, val_pred, "id", label_names=labels, binary_positive_label=args.binary_positive_label, threshold=args.threshold)
-                save_preds(out / "val_aux_predictions_best_auc.csv", val_ids, val_aux_y, val_aux_p, val_aux_pred, "id", label_names=aux_labels, binary_positive_label=args.binary_positive_label, threshold=args.threshold)
-            elif use_custom_classifier or is_field_aware:
+            if use_custom_classifier or is_field_aware:
                 save_state_dict_model(model, tokenizer, best_dir, epoch, val_metrics, args, max_len, labels, label_to_id, best_model_metric="auc")
                 save_preds(
                     out / "val_predictions_best_auc.csv",
@@ -434,7 +391,7 @@ def main():
                     label_names=labels,
                     binary_positive_label=args.binary_positive_label,
                     threshold=args.threshold,
-                    extra_rows=field_attention_rows(val_field_weights) if is_field_aware and args.save_field_attention else None,
+                    extra_rows=field_attention_rows(field_weights) if is_field_aware and args.save_field_attention else None,
                 )
             else:
                 save_model(model, tokenizer, best_dir, epoch, val_metrics, args, max_len, labels, label_to_id)
@@ -456,12 +413,7 @@ def main():
         writer.writerows(history)
     save_records(out / "dataset_records.csv", records)
 
-    if is_multitask:
-        eval_model = PhoBERTMultiTask(args.model, pooling=args.pooling)
-        resolve_max_len(eval_model, max_len)
-        eval_model.load_state_dict(torch.load(best_dir / "model.pt", map_location="cpu"))
-        eval_model = to_device(eval_model, device, not args.no_mgpu)
-    elif is_field_aware:
+    if is_field_aware:
         eval_model = FieldAwarePhoBERTClassifier(
             args.model,
             num_labels=len(labels),
@@ -518,86 +470,51 @@ def main():
     for split, loader in eval_loaders:
         if loader is None:
             continue
-        if is_multitask:
-            metrics, ids, y, p, pred, aux_y, aux_p, aux_pred = eval_multitask(
-                eval_model,
-                loader,
-                device,
-                args.threshold,
-                binary_label_names=labels,
-                aux_label_names=aux_labels,
-                lambda_aux=args.lambda_aux,
-            )
-            all_metrics[split] = round_metrics(metrics)
-            threshold_sweeps[split] = {}
-            for threshold in parse_thresholds(args.thresholds, args.threshold):
-                sweep_pred = (p[:, 1] >= threshold).astype(np.int64)
-                sweep_metrics = cls_metrics(
-                    y,
-                    p,
-                    sweep_pred,
-                    threshold=threshold,
-                    label_names=labels,
-                    binary_positive_label=args.binary_positive_label,
-                )
-                threshold_sweeps[split][str(threshold)] = round_metrics(sweep_metrics["binary_i63"])
-            save_preds(out / f"{split}_predictions_best_auc.csv", ids, y, p, pred, "id", label_names=labels, binary_positive_label=args.binary_positive_label, threshold=args.threshold)
-            save_preds(out / f"{split}_aux_predictions_best_auc.csv", ids, aux_y, aux_p, aux_pred, "id", label_names=aux_labels, binary_positive_label=args.binary_positive_label, threshold=args.threshold)
-            print(format_metrics_summary(f"{split}.primary_binary", all_metrics[split]["primary_binary"]))
-            print(format_metrics_summary(f"{split}.aux_3class", all_metrics[split]["aux_3class"]))
+        eval_result = eval_text(
+            eval_model,
+            loader,
+            device,
+            args.threshold,
+            label_names=labels,
+            binary_positive_label=args.binary_positive_label,
+            return_field_weights=is_field_aware and args.save_field_attention,
+        )
+        if is_field_aware and args.save_field_attention:
+            metrics, ids, y, p, pred, field_weights = eval_result
         else:
-            eval_result = eval_text(
-                eval_model,
-                loader,
-                device,
-                args.threshold,
-                label_names=labels,
-                binary_positive_label=args.binary_positive_label,
-                return_field_weights=is_field_aware and args.save_field_attention,
-            )
-            if is_field_aware and args.save_field_attention:
-                metrics, ids, y, p, pred, field_weights = eval_result
-            else:
-                metrics, ids, y, p, pred = eval_result
-                field_weights = None
-            all_metrics[split] = round_metrics(metrics)
-            threshold_sweeps[split] = {}
-            for threshold in parse_thresholds(args.thresholds, args.threshold):
-                sweep_pred = (p[:, 1] >= threshold).astype(np.int64) if p.ndim == 2 and p.shape[1] == 2 else pred
-                sweep_metrics = cls_metrics(
-                    y,
-                    p,
-                    sweep_pred,
-                    threshold=threshold,
-                    label_names=labels,
-                    binary_positive_label=args.binary_positive_label,
-                )
-                threshold_sweeps[split][str(threshold)] = round_metrics(sweep_metrics.get("binary_i63", sweep_metrics))
-            save_preds(
-                out / f"{split}_predictions_best_auc.csv",
-                ids,
+            metrics, ids, y, p, pred = eval_result
+            field_weights = None
+        all_metrics[split] = round_metrics(metrics)
+        threshold_sweeps[split] = {}
+        for threshold in parse_thresholds(args.thresholds, args.threshold):
+            sweep_pred = (p[:, 1] >= threshold).astype(np.int64) if p.ndim == 2 and p.shape[1] == 2 else pred
+            sweep_metrics = cls_metrics(
                 y,
                 p,
-                pred,
-                "id",
+                sweep_pred,
+                threshold=threshold,
                 label_names=labels,
                 binary_positive_label=args.binary_positive_label,
-                threshold=args.threshold,
-                extra_rows=field_attention_rows(field_weights) if is_field_aware and args.save_field_attention else None,
             )
-            print(format_metrics_summary(split, all_metrics[split]))
+            threshold_sweeps[split][str(threshold)] = round_metrics(sweep_metrics.get("binary_i63", sweep_metrics))
+        save_preds(
+            out / f"{split}_predictions_best_auc.csv",
+            ids,
+            y,
+            p,
+            pred,
+            "id",
+            label_names=labels,
+            binary_positive_label=args.binary_positive_label,
+            threshold=args.threshold,
+            extra_rows=field_attention_rows(field_weights) if is_field_aware and args.save_field_attention else None,
+        )
+        print(format_metrics_summary(split, all_metrics[split]))
     metrics_payload = {
         **all_metrics,
         "binary_threshold_sweep": threshold_sweeps,
         "model_config": model_config_metadata(args),
     }
-    if is_multitask:
-        metrics_payload["selection"] = {
-            "checkpoint_metric": "primary_binary_auc",
-            "uses_auxiliary_metric_for_selection": False,
-            "inference_head": "primary_binary",
-            "lambda_aux": args.lambda_aux,
-        }
     with open(out / "metrics.json", "w", encoding="utf-8") as f:
         json.dump(metrics_payload, f, ensure_ascii=False, indent=2)
     print(f"Saved full metrics to {out / 'metrics.json'}")
