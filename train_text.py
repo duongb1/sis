@@ -17,8 +17,6 @@ from transformers import AutoModelForSequenceClassification, AutoTokenizer, get_
 from sislib.common import get_device, resolve_max_len, round_float, round_metrics, seed_all, split_records, to_device, unwrap
 from sislib.metrics import cls_metrics, format_metrics_summary, save_preds
 from sislib.text_data import (
-    EXCEL_TEXT_COLUMNS,
-    FieldTextDataset,
     TextDataset,
     collect_excel_text,
     collect_large_text,
@@ -32,7 +30,7 @@ from sislib.text_data import (
     parse_labels_arg,
     save_records,
 )
-from sislib.text_train import FieldAwarePhoBERTClassifier, PhoBERTClassifier, ce_epoch, eval_text
+from sislib.text_train import PhoBERTClassifier, ce_epoch, eval_text
 
 
 def parse_args():
@@ -60,9 +58,7 @@ def parse_args():
     p.add_argument("--thresholds", default=None, help="Comma-separated thresholds for binary_positive_label metrics, e.g. 0.30,0.35,0.40,0.45,0.50.")
 
     p.add_argument("--pooling", choices=["cls", "attention", "gated"], default="cls", help="Pooling method after PhoBERT encoder. cls uses the first-token representation, attention learns token-level attention pooling, and gated fuses CLS with attention pooling.")
-    p.add_argument("--input-mode", choices=["concat", "field"], default="concat", help="Input representation mode: concat all fields or encode Excel fields separately.")
-    p.add_argument("--max-len-per-field", type=int, default=128, help="Maximum token length for each clinical field when --input-mode field.")
-    p.add_argument("--save-field-attention", action="store_true", help="Save field-level attention weights in field-aware prediction CSVs.")
+    p.add_argument("--input-mode", choices=["concat"], default="concat", help="Input representation mode: concat all fields.")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--workers", type=int, default=0)
     p.add_argument("--accum", type=int, default=1)
@@ -112,7 +108,6 @@ def save_model(model, tokenizer, path, epoch, metrics, args, max_len, labels, la
                 "binary_positive_label": args.binary_positive_label,
                 "pooling": args.pooling,
                 "input_mode": args.input_mode,
-                "max_len_per_field": args.max_len_per_field,
                 "split_strategy": args.split_strategy,
                 "n_folds": args.n_folds,
                 "fold_index": args.fold_index,
@@ -145,7 +140,6 @@ def save_state_dict_model(model, tokenizer, path, epoch, metrics, args, max_len,
                 "binary_positive_label": args.binary_positive_label,
                 "pooling": args.pooling,
                 "input_mode": args.input_mode,
-                "max_len_per_field": args.max_len_per_field,
                 "split_strategy": args.split_strategy,
                 "n_folds": args.n_folds,
                 "fold_index": args.fold_index,
@@ -155,19 +149,6 @@ def save_state_dict_model(model, tokenizer, path, epoch, metrics, args, max_len,
                 "model_config": model_config_metadata(args),
         }
         json.dump(info, f, ensure_ascii=False, indent=2)
-
-
-def field_attention_rows(field_weights):
-    if field_weights is None:
-        return None
-    rows = []
-    for weights in field_weights:
-        row = {}
-        for field_name, weight in zip(EXCEL_TEXT_COLUMNS, weights):
-            row[f"field_attention_{field_name}"] = round_float(weight, 6)
-        row["top_field"] = EXCEL_TEXT_COLUMNS[int(np.argmax(weights))]
-        rows.append(row)
-    return rows
 
 
 def label_distribution(rows, key):
@@ -274,27 +255,14 @@ def main():
         print(f"Excel split stratify label: {args.excel_split_label}")
         for split_name, rows in [("train", train_rows), ("val", val_rows), ("test", test_rows)]:
             print(f"{split_name} label distribution: {label_distribution(rows, 'label_name')}")
-    is_field_aware = args.input_mode == "field"
-    if args.input_mode == "field":
-        if not use_excel:
-            raise RuntimeError("--input-mode field is currently supported only for Excel input.")
-        if args.pooling == "gated":
-            raise RuntimeError("--pooling gated is currently supported for --input-mode concat. Use --input-mode concat for gated fusion.")
     device = get_device(args.cpu)
     tokenizer_source = args.init_checkpoint if args.init_checkpoint and Path(args.init_checkpoint).exists() else args.model
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_source, use_fast=False)
     use_custom_classifier = args.pooling in {"attention", "gated"}
     hf_model_source = args.model
-    if args.init_checkpoint and not (Path(args.init_checkpoint) / "model.pt").exists() and not (is_field_aware or use_custom_classifier):
+    if args.init_checkpoint and not (Path(args.init_checkpoint) / "model.pt").exists() and not use_custom_classifier:
         hf_model_source = args.init_checkpoint
-    if is_field_aware:
-        model = FieldAwarePhoBERTClassifier(
-            args.model,
-            num_labels=len(labels),
-            num_fields=len(EXCEL_TEXT_COLUMNS),
-            pooling=args.pooling,
-        )
-    elif use_custom_classifier:
+    if use_custom_classifier:
         model = PhoBERTClassifier(
             args.model,
             num_labels=len(labels),
@@ -308,7 +276,7 @@ def main():
             label2id=label_to_id,
             ignore_mismatched_sizes=True,
         )
-    max_len = resolve_max_len(model, args.max_len_per_field if is_field_aware else args.max_len)
+    max_len = resolve_max_len(model, args.max_len)
     if args.init_checkpoint and Path(args.init_checkpoint).exists():
         loaded_state = load_initial_checkpoint(model, args.init_checkpoint)
         if loaded_state:
@@ -323,18 +291,17 @@ def main():
         print("Fusion: CLS + Attention gated fusion")
     print(f"Text samples: {len(records)} | Train: {len(train_rows)} | Val: {len(val_rows)} | Test: {len(test_rows)}")
 
-    dataset_cls = FieldTextDataset if is_field_aware else TextDataset
     is_multi_gpu = device.type == "cuda" and not args.no_mgpu and torch.cuda.device_count() > 1
     train_loader = DataLoader(
-        dataset_cls(train_rows, tokenizer, max_len),
+        TextDataset(train_rows, tokenizer, max_len),
         batch_size=args.batch,
         shuffle=True,
         num_workers=args.workers,
         pin_memory=device.type == "cuda",
         drop_last=is_multi_gpu
     )
-    val_loader = DataLoader(dataset_cls(val_rows, tokenizer, max_len), batch_size=args.batch, shuffle=False, num_workers=args.workers, pin_memory=device.type == "cuda")
-    test_loader = DataLoader(dataset_cls(test_rows, tokenizer, max_len), batch_size=args.batch, shuffle=False, num_workers=args.workers, pin_memory=device.type == "cuda") if test_rows else None
+    val_loader = DataLoader(TextDataset(val_rows, tokenizer, max_len), batch_size=args.batch, shuffle=False, num_workers=args.workers, pin_memory=device.type == "cuda")
+    test_loader = DataLoader(TextDataset(test_rows, tokenizer, max_len), batch_size=args.batch, shuffle=False, num_workers=args.workers, pin_memory=device.type == "cuda") if test_rows else None
 
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.wd)
     steps = max(1, int(np.ceil(len(train_loader) / max(args.accum, 1))) * args.epochs)
@@ -351,13 +318,8 @@ def main():
             args.threshold,
             label_names=labels,
             binary_positive_label=args.binary_positive_label,
-            return_field_weights=is_field_aware and args.save_field_attention,
         )
-        if is_field_aware and args.save_field_attention:
-            val_metrics, val_ids, val_y, val_p, val_pred, val_field_weights = eval_result
-        else:
-            val_metrics, val_ids, val_y, val_p, val_pred = eval_result
-            val_field_weights = None
+        val_metrics, val_ids, val_y, val_p, val_pred = eval_result
         primary_val = val_metrics
         val_score = val_metrics["auc"]
         if np.isnan(val_score):
@@ -379,7 +341,7 @@ def main():
         )
         if val_score > best:
             best = val_score
-            if use_custom_classifier or is_field_aware:
+            if use_custom_classifier:
                 save_state_dict_model(model, tokenizer, best_dir, epoch, val_metrics, args, max_len, labels, label_to_id, best_model_metric="auc")
                 save_preds(
                     out / "val_predictions_best_auc.csv",
@@ -391,7 +353,6 @@ def main():
                     label_names=labels,
                     binary_positive_label=args.binary_positive_label,
                     threshold=args.threshold,
-                    extra_rows=field_attention_rows(field_weights) if is_field_aware and args.save_field_attention else None,
                 )
             else:
                 save_model(model, tokenizer, best_dir, epoch, val_metrics, args, max_len, labels, label_to_id)
@@ -413,17 +374,7 @@ def main():
         writer.writerows(history)
     save_records(out / "dataset_records.csv", records)
 
-    if is_field_aware:
-        eval_model = FieldAwarePhoBERTClassifier(
-            args.model,
-            num_labels=len(labels),
-            num_fields=len(EXCEL_TEXT_COLUMNS),
-            pooling=args.pooling,
-        )
-        resolve_max_len(eval_model, max_len)
-        eval_model.load_state_dict(torch.load(best_dir / "model.pt", map_location="cpu"))
-        eval_model = to_device(eval_model, device, not args.no_mgpu)
-    elif use_custom_classifier:
+    if use_custom_classifier:
         eval_model = PhoBERTClassifier(
             args.model,
             num_labels=len(labels),
@@ -460,7 +411,7 @@ def main():
             eval_loaders.append(
                 (
                     f"{eval_name}_{split_name}",
-                    DataLoader(dataset_cls(rows, tokenizer, max_len), batch_size=args.batch, shuffle=False, num_workers=args.workers, pin_memory=device.type == "cuda"),
+                    DataLoader(TextDataset(rows, tokenizer, max_len), batch_size=args.batch, shuffle=False, num_workers=args.workers, pin_memory=device.type == "cuda"),
                 )
             )
     if extra_eval_records:
@@ -477,13 +428,8 @@ def main():
             args.threshold,
             label_names=labels,
             binary_positive_label=args.binary_positive_label,
-            return_field_weights=is_field_aware and args.save_field_attention,
         )
-        if is_field_aware and args.save_field_attention:
-            metrics, ids, y, p, pred, field_weights = eval_result
-        else:
-            metrics, ids, y, p, pred = eval_result
-            field_weights = None
+        metrics, ids, y, p, pred = eval_result
         all_metrics[split] = round_metrics(metrics)
         threshold_sweeps[split] = {}
         for threshold in parse_thresholds(args.thresholds, args.threshold):
@@ -507,7 +453,6 @@ def main():
             label_names=labels,
             binary_positive_label=args.binary_positive_label,
             threshold=args.threshold,
-            extra_rows=field_attention_rows(field_weights) if is_field_aware and args.save_field_attention else None,
         )
         print(format_metrics_summary(split, all_metrics[split]))
     metrics_payload = {

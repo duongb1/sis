@@ -528,52 +528,6 @@ class TextDataset(Dataset):
         return item
 
 
-class FieldTextDataset(Dataset):
-    def __init__(self, records, tokenizer, max_len_per_field, field_names=None, sample_weights=None):
-        self.records = records
-        self.tokenizer = tokenizer
-        self.max_len_per_field = max_len_per_field
-        self.field_names = list(field_names or EXCEL_TEXT_COLUMNS)
-        self.sample_weights = sample_weights
-
-    def __len__(self):
-        return len(self.records)
-
-    def __getitem__(self, idx):
-        row = self.records[idx]
-        fields = row.get("fields")
-        if fields is None:
-            raise ValueError("FieldTextDataset requires records with per-field text. Use Excel input with --input-mode field.")
-        input_ids, attention_masks, field_mask = [], [], []
-        for field_name in self.field_names:
-            text = fields.get(field_name, "")
-            has_text = bool(text.strip())
-            encoded = self.tokenizer(
-                text if has_text else " ",
-                truncation=True,
-                padding="max_length",
-                max_length=self.max_len_per_field,
-                return_tensors="pt",
-            )
-            input_ids.append(encoded["input_ids"].squeeze(0))
-            attention_masks.append(encoded["attention_mask"].squeeze(0))
-            field_mask.append(1 if has_text else 0)
-        item = {
-            "input_ids": torch.stack(input_ids, dim=0),
-            "attention_mask": torch.stack(attention_masks, dim=0),
-            "field_mask": torch.tensor(field_mask, dtype=torch.long),
-            "labels": torch.tensor(row["label"], dtype=torch.long),
-            "id": row["id"],
-        }
-        if self.sample_weights is not None:
-            item["sample_weight"] = torch.tensor(self.sample_weights[row["id"]], dtype=torch.float32)
-        if "aux_label" in row and row["aux_label"] != "":
-            item["aux_labels"] = torch.tensor(row["aux_label"], dtype=torch.long)
-        if "multiclass_label" in row and row["multiclass_label"] != "":
-            item["multiclass_labels"] = torch.tensor(row["multiclass_label"], dtype=torch.long)
-        return item
-
-
 def save_records(path, records):
     optional_fields = ["source_file", "row_index", "binary_label_name", "multiclass_label", "multiclass_label_name", "raw_multiclass_label_name", "aux_label", "aux_label_name", "fold"]
     fieldnames = ["id", "split", "label", "label_name", "text_path"]
