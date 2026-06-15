@@ -57,41 +57,9 @@ def print_key_summary(name, summary):
         "test.auc",
         "test.sensitivity",
         "test.specificity",
-        "test.balanced_accuracy",
-        "test.binary_i63.accuracy",
-        "test.binary_i63.f1",
-        "test.binary_i63.auc",
-        "test.binary_i63.sensitivity",
-        "test.binary_i63.specificity",
-        "test.binary_i63.balanced_accuracy",
-        "test.primary_binary.accuracy",
-        "test.primary_binary.f1",
-        "test.primary_binary.auc",
-        "test.primary_binary.sensitivity",
-        "test.primary_binary.specificity",
-        "test.primary_binary.balanced_accuracy",
-        "test.aux_3class.accuracy",
-        "test.aux_3class.f1_macro",
-        "test.aux_3class.auc",
     ]
-    print("\n" + "-" * 80)
     print(f"5-fold mean ± std: {name}")
     for key in keys:
-        stats = summary.get(key)
-        if stats:
-            print(f"{key}: {stats['mean']:.3f} ± {stats['std']:.3f}")
-    for key in sorted(summary):
-        if key.startswith("binary_threshold_sweep.test."):
-            stats = summary[key]
-            print(f"{key}: {stats['mean']:.3f} ± {stats['std']:.3f}")
-    for key in [
-        "selected.threshold",
-        "selected.val.sensitivity",
-        "selected.val.specificity",
-        "selected.val.balanced_accuracy",
-        "selected.metrics.sensitivity",
-        "selected.metrics.specificity",
-    ]:
         stats = summary.get(key)
         if stats:
             print(f"{key}: {stats['mean']:.3f} ± {stats['std']:.3f}")
