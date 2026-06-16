@@ -59,13 +59,6 @@ def print_key_summary(name, summary):
         "test.specificity",
         "test.brier_score",
         "test.ece",
-        "test.binary_i63.accuracy",
-        "test.binary_i63.f1",
-        "test.binary_i63.auc",
-        "test.binary_i63.sensitivity",
-        "test.binary_i63.specificity",
-        "test.binary_i63.brier_score",
-        "test.binary_i63.ece",
     ]
     print(f"5-fold mean ± std: {name}")
     for key in keys:
