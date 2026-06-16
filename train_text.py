@@ -55,7 +55,6 @@ def parse_args():
     p.add_argument("--wd", type=float, default=0.01)
     p.add_argument("--warmup", type=float, default=0.1)
     p.add_argument("--threshold", type=float, default=0.5)
-    p.add_argument("--thresholds", default=None, help="Comma-separated thresholds for binary_positive_label metrics, e.g. 0.30,0.35,0.40,0.45,0.50.")
 
     p.add_argument("--pooling", choices=["cls", "attention", "gated"], default="cls", help="Pooling method after PhoBERT encoder. cls uses the first-token representation, attention learns token-level attention pooling, and gated fuses CLS with attention pooling.")
     p.add_argument("--input-mode", choices=["concat"], default="concat", help="Input representation mode: concat all fields.")
@@ -72,11 +71,6 @@ def parse_args():
     return p.parse_args()
 
 
-def parse_thresholds(value, default):
-    if value is None:
-        return [default]
-    thresholds = [float(item.strip()) for item in str(value).split(",") if item.strip()]
-    return thresholds or [default]
 
 
 def model_config_metadata(args):
@@ -385,7 +379,7 @@ def main():
         eval_model = to_device(eval_model, device, not args.no_mgpu)
     else:
         eval_model = to_device(AutoModelForSequenceClassification.from_pretrained(best_dir), device, not args.no_mgpu)
-    all_metrics, threshold_sweeps = {}, {}
+    all_metrics = {}
     eval_loaders = [("val", val_loader), ("test", test_loader)]
     extra_eval_records = {}
     for spec in args.eval_data:
@@ -431,18 +425,6 @@ def main():
         )
         metrics, ids, y, p, pred = eval_result
         all_metrics[split] = round_metrics(metrics)
-        threshold_sweeps[split] = {}
-        for threshold in parse_thresholds(args.thresholds, args.threshold):
-            sweep_pred = (p[:, 1] >= threshold).astype(np.int64) if p.ndim == 2 and p.shape[1] == 2 else pred
-            sweep_metrics = cls_metrics(
-                y,
-                p,
-                sweep_pred,
-                threshold=threshold,
-                label_names=labels,
-                binary_positive_label=args.binary_positive_label,
-            )
-            threshold_sweeps[split][str(threshold)] = round_metrics(sweep_metrics.get("binary_i63", sweep_metrics))
         save_preds(
             out / f"{split}_predictions_best_auc.csv",
             ids,
@@ -457,7 +439,6 @@ def main():
         print(format_metrics_summary(split, all_metrics[split]))
     metrics_payload = {
         **all_metrics,
-        "binary_threshold_sweep": threshold_sweeps,
         "model_config": model_config_metadata(args),
     }
     with open(out / "metrics.json", "w", encoding="utf-8") as f:

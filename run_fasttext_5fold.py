@@ -8,8 +8,11 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import accuracy_score, balanced_accuracy_score, confusion_matrix, f1_score, roc_auc_score
 
-from sislib.data.labels import EXCEL_MULTICLASS_LABEL_MAP, EXCEL_TEXT_COLUMNS, binary_i63_from_multiclass, normalize_multiclass_label
+from sislib.data.labels import EXCEL_TEXT_COLUMNS
 from sislib.data.splits import assign_kfold_splits
+
+def label_from_filename(name: str) -> str:
+    return "co" if "co" in name.lower() else "khong"
 
 
 TEXT_FIELDS_ALL = EXCEL_TEXT_COLUMNS
@@ -20,18 +23,6 @@ TEXT_FIELDS_CHIEF_EXAM = [
     "KB_BOPHAN",
 ]
 
-VALID_MULTICLASS_LABELS = {
-    "DISTANT_OTHER",
-    "I63_INFARCTION",
-    "OTHER_STROKE_LIKE",
-}
-MULTICLASS_LABELS = ["DISTANT_OTHER", "I63_INFARCTION", "OTHER_STROKE_LIKE"]
-BINARY_MAPPING = {
-    "I63_INFARCTION": "co",
-    "OTHER_STROKE_LIKE": "khong",
-    "DISTANT_OTHER": "khong",
-}
-POSITIVE_MULTICLASS_LABEL = "I63_INFARCTION"
 POSITIVE_BINARY_LABEL = "co"
 
 MODELS = [
@@ -47,18 +38,6 @@ MODELS = [
         "input_mode": "chief_exam",
         "fields": TEXT_FIELDS_CHIEF_EXAM,
     },
-    {
-        "name": "fasttext_multiclass_to_binary_all_fields",
-        "task": "multiclass_to_binary",
-        "input_mode": "all_fields",
-        "fields": TEXT_FIELDS_ALL,
-    },
-    {
-        "name": "fasttext_multiclass_to_binary_chief_exam",
-        "task": "multiclass_to_binary",
-        "input_mode": "chief_exam",
-        "fields": TEXT_FIELDS_CHIEF_EXAM,
-    },
 ]
 
 PHOBERT_ATTNPOOL_REFERENCE = {
@@ -67,7 +46,6 @@ PHOBERT_ATTNPOOL_REFERENCE = {
     "auc": 0.866,
     "sensitivity": 0.840,
     "specificity": 0.757,
-    "balanced_accuracy": 0.799,
     "fp": 167,
     "fn": 114,
 }
@@ -82,7 +60,6 @@ def parse_args():
     parser.add_argument("--val-ratio", type=float, default=0.1)
     parser.add_argument("--test-ratio", type=float, default=0.2)
     parser.add_argument("--threshold", type=float, default=0.5)
-    parser.add_argument("--thresholds", default="0.30,0.35,0.40,0.45,0.50")
     parser.add_argument("--epoch", type=int, default=50)
     parser.add_argument("--lr", type=float, default=0.5)
     parser.add_argument("--word-ngrams", type=int, default=2)
@@ -119,8 +96,7 @@ def fasttext_escape(text):
     return re.sub(r"\s+", " ", str(text).replace("\n", " ").replace("\t", " ")).strip()
 
 
-def parse_thresholds(value):
-    return [float(item.strip()) for item in str(value).split(",") if item.strip()]
+
 
 
 def excel_paths(excel_root):
@@ -144,18 +120,8 @@ def load_excel(excel_root):
         frames.append(df)
     df = pd.concat(frames, ignore_index=True)
 
-    raw_labels = set(df["LABEL"].dropna().astype(str).unique())
-    unexpected_raw = raw_labels - set(EXCEL_MULTICLASS_LABEL_MAP)
-    if unexpected_raw:
-        raise ValueError(f"Unexpected raw LABEL values before 3-class mapping: {unexpected_raw}")
-
-    df["raw_LABEL"] = df["LABEL"]
-    df["LABEL"] = df["LABEL"].map(normalize_multiclass_label)
-    bad_labels = set(df["LABEL"].dropna().unique()) - VALID_MULTICLASS_LABELS
-    if bad_labels:
-        raise ValueError(f"Unexpected LABEL values: {bad_labels}")
-
-    print("Multiclass distribution:")
+    print("Label distribution by filename:")
+    df["LABEL"] = df["source_file"].map(label_from_filename)
     print(df["LABEL"].value_counts())
     return df.reset_index(drop=True)
 
@@ -164,9 +130,8 @@ def make_splits(df, args):
     records = [
         {
             "index": index,
-            "label": int(binary_i63_from_multiclass(row["LABEL"])),
-            "binary_label_name": BINARY_MAPPING[row["LABEL"]],
-            "multiclass_label_name": row["LABEL"],
+            "label": 1 if row["LABEL"] == "co" else 0,
+            "binary_label_name": row["LABEL"],
         }
         for index, row in df.iterrows()
     ]
@@ -177,7 +142,7 @@ def make_splits(df, args):
             n_folds=args.folds,
             fold_index=fold,
             val_ratio=args.val_ratio,
-            split_label="multiclass",
+            split_label="binary",
         )
         indices_by_split = {"train": [], "val": [], "test": []}
         for record in split_records:
@@ -190,18 +155,10 @@ def make_splits(df, args):
         )
 
 
-def training_label(row, task):
-    if task == "binary":
-        return BINARY_MAPPING[row["LABEL"]]
-    if task == "multiclass_to_binary":
-        return row["LABEL"]
-    raise ValueError(f"Unsupported task: {task}")
-
-
 def write_fasttext_file(path, df, fields, task):
     with open(path, "w", encoding="utf-8", newline="\n") as f:
         for _, row in df.iterrows():
-            label = training_label(row, task)
+            label = row["LABEL"]
             text = fasttext_escape(build_text(row, fields))
             f.write(f"__label__{label} {text}\n")
 
@@ -247,18 +204,35 @@ def get_label_probs(model, text: str) -> dict:
     return {label: float(prob) for label, prob in zip(labels, probs)}
 
 
+def expected_calibration_error(labels, probs, num_bins=10):
+    labels = np.asarray(labels)
+    probs = np.asarray(probs)
+    if len(labels) == 0:
+        return 0.0
+    bin_boundaries = np.linspace(0, 1, num_bins + 1)
+    ece = 0.0
+    for i in range(num_bins):
+        bin_lower = bin_boundaries[i]
+        bin_upper = bin_boundaries[i + 1]
+        if i == num_bins - 1:
+            in_bin = (probs >= bin_lower) & (probs <= bin_upper)
+        else:
+            in_bin = (probs >= bin_lower) & (probs < bin_upper)
+        prop_in_bin = np.mean(in_bin)
+        if prop_in_bin > 0:
+            accuracy_in_bin = np.mean(labels[in_bin])
+            avg_confidence_in_bin = np.mean(probs[in_bin])
+            ece += prop_in_bin * np.abs(avg_confidence_in_bin - accuracy_in_bin)
+    return float(ece)
+
+
 def predict_binary(model, df, fields, task, threshold):
     y_true, y_prob, y_pred = [], [], []
     for _, row in df.iterrows():
         text = fasttext_escape(build_text(row, fields))
         probs = get_label_probs(model, text)
-        if task == "binary":
-            p_i63 = probs.get(f"__label__{POSITIVE_BINARY_LABEL}", 0.0)
-        elif task == "multiclass_to_binary":
-            p_i63 = probs.get(f"__label__{POSITIVE_MULTICLASS_LABEL}", 0.0)
-        else:
-            raise ValueError(f"Unsupported task: {task}")
-        y_true.append(1 if row["LABEL"] == POSITIVE_MULTICLASS_LABEL else 0)
+        p_i63 = probs.get(f"__label__{POSITIVE_BINARY_LABEL}", 0.0)
+        y_true.append(1 if row["LABEL"] == "co" else 0)
         y_prob.append(p_i63)
         y_pred.append(1 if p_i63 >= threshold else 0)
     return np.asarray(y_true), np.asarray(y_prob), np.asarray(y_pred)
@@ -273,13 +247,16 @@ def binary_metrics(y_true, y_prob, y_pred):
         auc = float(roc_auc_score(y_true, y_prob))
     except ValueError:
         auc = float("nan")
+    brier = float(np.mean((y_prob - y_true) ** 2))
+    ece = expected_calibration_error(y_true, y_prob)
     return {
         "accuracy": float(accuracy_score(y_true, y_pred)),
         "f1": float(f1_score(y_true, y_pred, zero_division=0)),
         "auc": auc,
         "sensitivity": float(sensitivity),
         "specificity": float(specificity),
-        "balanced_accuracy": float(balanced_accuracy_score(y_true, y_pred)),
+        "brier_score": brier,
+        "ece": ece,
         "cm": [[tn, fp], [fn, tp]],
         "tn": tn,
         "fp": fp,
@@ -312,9 +289,8 @@ def hyperparameters(args):
 
 def label_schema():
     return {
-        "multiclass_labels": MULTICLASS_LABELS,
-        "binary_mapping": BINARY_MAPPING,
-        "positive_label": POSITIVE_MULTICLASS_LABEL,
+        "labels": ["khong", "co"],
+        "positive_label": "co",
     }
 
 
@@ -357,20 +333,20 @@ def aggregate_cm(metrics_rows):
 
 def print_threshold_table(model_name, fold, sweep):
     print(f"\nThreshold sweep: {model_name} fold {fold}")
-    print("threshold | acc | f1 | auc | sens | spec | bal_acc")
+    print("threshold | acc | f1 | auc | sens | spec | brier | ece")
     for threshold, metrics in sweep.items():
         auc = metrics["auc"]
         auc_text = "nan" if math.isnan(auc) else f"{auc:.3f}"
         print(
             f"{threshold:>9} | {metrics['accuracy']:.3f} | {metrics['f1']:.3f} | "
             f"{auc_text} | {metrics['sensitivity']:.3f} | {metrics['specificity']:.3f} | "
-            f"{metrics['balanced_accuracy']:.3f}"
+            f"{metrics['brier_score']:.3f} | {metrics['ece']:.3f}"
         )
 
 
 def print_summary(results_by_model):
     print("\n5-fold summary: FastText small models\n")
-    print(f"{'Model':48} {'Acc':9} {'F1':9} {'AUC':9} {'Sens':9} {'Spec':9} {'BalAcc':9} FP/FN")
+    print(f"{'Model':48} {'Acc':9} {'F1':9} {'AUC':9} {'Sens':9} {'Spec':9} {'Brier':9} {'ECE':9} FP/FN")
     for model_name, rows in results_by_model.items():
         tn, fp, fn, tp = aggregate_cm(rows)
         print(
@@ -380,7 +356,8 @@ def print_summary(results_by_model):
             f"{format_mean_std([row['test']['auc'] for row in rows]):9} "
             f"{format_mean_std([row['test']['sensitivity'] for row in rows]):9} "
             f"{format_mean_std([row['test']['specificity'] for row in rows]):9} "
-            f"{format_mean_std([row['test']['balanced_accuracy'] for row in rows]):9} "
+            f"{format_mean_std([row['test']['brier_score'] for row in rows]):9} "
+            f"{format_mean_std([row['test']['ece'] for row in rows]):9} "
             f"{fp}/{fn}"
         )
 
@@ -395,7 +372,6 @@ def print_summary(results_by_model):
         ("best_auc", "auc", max),
         ("best_sensitivity", "sensitivity", max),
         ("best_specificity", "specificity", max),
-        ("best_balanced_accuracy", "balanced_accuracy", max),
         ("lowest_fn", "fn", min),
         ("lowest_fp", "fp", min),
     ]
@@ -413,11 +389,11 @@ def print_summary(results_by_model):
     print(
         f"Acc={ref['accuracy']:.3f} F1={ref['f1']:.3f} AUC={ref['auc']:.3f} "
         f"Sens={ref['sensitivity']:.3f} Spec={ref['specificity']:.3f} "
-        f"BalAcc={ref['balanced_accuracy']:.3f} FP/FN={ref['fp']}/{ref['fn']}"
+        f"FP/FN={ref['fp']}/{ref['fn']}"
     )
 
 
-def run_model_fold(model_cfg, fold, train_df, val_df, test_df, output_dir, args, thresholds):
+def run_model_fold(model_cfg, fold, train_df, val_df, test_df, output_dir, args):
     fold_dir = output_dir / model_cfg["name"] / f"fold_{fold}"
     fold_dir.mkdir(parents=True, exist_ok=True)
     train_path = fold_dir / "train.txt"
@@ -438,7 +414,6 @@ def run_model_fold(model_cfg, fold, train_df, val_df, test_df, output_dir, args,
 
     y_true, y_prob, y_pred = predict_binary(model, test_df, model_cfg["fields"], model_cfg["task"], args.threshold)
     test_metrics = binary_metrics(y_true, y_prob, y_pred)
-    sweep = threshold_sweep(model, test_df, model_cfg["fields"], model_cfg["task"], thresholds)
 
     payload = {
         "model": model_cfg["name"],
@@ -452,18 +427,13 @@ def run_model_fold(model_cfg, fold, train_df, val_df, test_df, output_dir, args,
         "label_schema": label_schema(),
         "hyperparameters": hyperparameters(args),
         "test": test_metrics,
-        "threshold_sweep": {
-            "test": sweep,
-        },
     }
     save_metrics(metrics_path, payload)
-    print_threshold_table(model_cfg["name"], fold, sweep)
     return payload
 
 
 def main():
     args = parse_args()
-    thresholds = parse_thresholds(args.thresholds)
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -474,7 +444,7 @@ def main():
         print(f"\nFold {fold}: train={len(train_df)} val={len(val_df)} test={len(test_df)}")
         for model_cfg in MODELS:
             print(f"\nTraining {model_cfg['name']} fold {fold}")
-            payload = run_model_fold(model_cfg, fold, train_df, val_df, test_df, output_dir, args, thresholds)
+            payload = run_model_fold(model_cfg, fold, train_df, val_df, test_df, output_dir, args)
             results_by_model[model_cfg["name"]].append(payload)
 
     print_summary(results_by_model)

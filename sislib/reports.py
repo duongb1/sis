@@ -126,33 +126,7 @@ def mean_std_text(summary, key):
     return f"{stats['mean']:.3f}±{stats['std']:.3f}"
 
 
-def print_threshold_sweep_table(output_dir, folder, folds):
-    rows_by_threshold = {}
-    for fold in range(folds):
-        path = output_dir / folder / f"fold_{fold}" / "metrics.json"
-        if not path.exists():
-            return
-        sweep = load_json(path).get("binary_threshold_sweep", {}).get("test", {})
-        for threshold, metrics in sweep.items():
-            rows_by_threshold.setdefault(threshold, []).append(
-                {f"test.{key}": value for key, value in metrics.items() if key in {"accuracy", "f1", "auc", "sensitivity", "specificity", "brier_score", "ece"}}
-            )
-    if not rows_by_threshold:
-        return
-    print(f"\nThreshold sweep: {folder}")
-    print("threshold | acc       | f1        | auc       | sens      | spec      | brier     | ece")
-    for threshold in sorted(rows_by_threshold, key=lambda item: float(item)):
-        summary = summarize_metric_rows(rows_by_threshold[threshold])
-        print(
-            f"{float(threshold):>9.2f} | "
-            f"{mean_std_text(summary, 'test.accuracy'):<9} | "
-            f"{mean_std_text(summary, 'test.f1'):<9} | "
-            f"{mean_std_text(summary, 'test.auc'):<9} | "
-            f"{mean_std_text(summary, 'test.sensitivity'):<9} | "
-            f"{mean_std_text(summary, 'test.specificity'):<9} | "
-            f"{mean_std_text(summary, 'test.brier_score'):<9} | "
-            f"{mean_std_text(summary, 'test.ece'):<9}"
-        )
+
 
 
 def best_model_line(reports, metric_key):
@@ -168,8 +142,6 @@ def best_model_line(reports, metric_key):
 def print_final_small_report(output_dir, args):
     model_folders = [
         ("small_binary", "small_binary"),
-        ("small_multiclass_to_binary", "small_multiclass"),
-        ("small_multitask", "small_multitask"),
     ]
     reports = {}
     for display_name, folder in model_folders:
@@ -200,29 +172,7 @@ def print_final_small_report(output_dir, args):
         counts = report["counts"]
         print(f"{name:<29} TN={counts['tn']} FP={counts['fp']} FN={counts['fn']} TP={counts['tp']}")
 
-    baseline = reports.get("small_binary", {}).get("counts")
-    if baseline:
-        print("\nFP/FN trade-off vs small_binary:")
-        for name, report in reports.items():
-            if name == "small_binary":
-                continue
-            counts = report["counts"]
-            print(f"{name:<29} FP {counts['fp'] - baseline['fp']:+d}, FN {counts['fn'] - baseline['fn']:+d}")
 
-    print("\nBest metrics:")
-    for label, key in [
-        ("best_f1", "test.f1"),
-        ("best_auc", "test.auc"),
-        ("best_sensitivity", "test.sensitivity"),
-        ("best_specificity", "test.specificity"),
-    ]:
-        winner = best_model_line(reports, key)
-        if winner:
-            print(f"{label}: {winner}")
-
-    print_threshold_sweep_table(output_dir, "small_binary", args.folds)
-    print_threshold_sweep_table(output_dir, "small_multiclass", args.folds)
-    print_threshold_sweep_table(output_dir, "small_multitask", args.folds)
 
 
 def aggregate_experiment(output_dir, experiment_name, folds):

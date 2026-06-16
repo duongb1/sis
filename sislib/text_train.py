@@ -123,7 +123,6 @@ def ce_epoch(model, loader, optimizer, scheduler, scaler, device, accum=1):
     optimizer.zero_grad(set_to_none=True)
     for step, batch in enumerate(tqdm(loader, desc="Training", leave=False), start=1):
         inputs, _ = batch_to_device(batch, device, "id")
-        inputs.pop("multiclass_labels", None)
         inputs.pop("sample_weight", None)
         labels = inputs["labels"]
         with torch.amp.autocast("cuda", enabled=device.type == "cuda"):
@@ -152,7 +151,6 @@ def eval_text(model, loader, device, threshold=0.5, desc="Evaluating", label_nam
     for batch in tqdm(loader, desc=desc, leave=False):
         inputs, batch_ids = batch_to_device(batch, device, "id")
         inputs.pop("sample_weight", None)
-        inputs.pop("multiclass_labels", None)
         labels = inputs["labels"]
         outputs = unwrap(model)(**inputs)
         loss = hf_loss(outputs, labels)

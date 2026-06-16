@@ -6,13 +6,14 @@ import sys
 from pathlib import Path
 
 
-DEFAULT_KAGGLE_MRI_ROOT = "images"
+DEFAULT_KAGGLE_MRI_ROOT = "/kaggle/input/datasets/duongbui/siscth/images"
+mri_root_default = DEFAULT_KAGGLE_MRI_ROOT if Path(DEFAULT_KAGGLE_MRI_ROOT).exists() else "images"
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Run 5-fold MRI binary training.")
     parser.add_argument("--folds-csv", default="")
-    parser.add_argument("--image-root", default="images")
+    parser.add_argument("--image-root", default=mri_root_default)
     parser.add_argument("--output-dir", default="mri_binary_5fold")
     parser.add_argument("--folds", type=int, default=5)
     parser.add_argument("--epochs", type=int, default=10)
@@ -35,7 +36,7 @@ def parse_args():
 def train_command(args, fold, out):
     cmd = [
         sys.executable,
-        "train_mri_3class.py",
+        "train_mri.py",
         "--folds-csv",
         args.folds_csv,
         "--image-root",

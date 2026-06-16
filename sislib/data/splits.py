@@ -9,8 +9,6 @@ def assign_kfold_splits(records, seed=42, n_folds=5, fold_index=0, val_ratio=0.1
 
     if split_label == "binary":
         y = [record["binary_label_name"] for record in records]
-    elif split_label == "multiclass":
-        y = [record["multiclass_label_name"] for record in records]
     elif split_label == "target":
         y = [record["label"] for record in records]
     else:

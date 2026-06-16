@@ -73,13 +73,14 @@ def get_splits_for_fold(cases, fold_index, n_folds=5):
     return train_rows, val_rows, test_rows
 
 
-DEFAULT_KAGGLE_MRI_ROOT = "images"
+DEFAULT_KAGGLE_MRI_ROOT = "/kaggle/input/datasets/duongbui/siscth/images"
+mri_root_default = DEFAULT_KAGGLE_MRI_ROOT if Path(DEFAULT_KAGGLE_MRI_ROOT).exists() else "images"
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train a binary MRI case-level classifier.")
     parser.add_argument("--folds-csv", default="")
-    parser.add_argument("--image-root", default="images")
+    parser.add_argument("--image-root", default=mri_root_default)
     parser.add_argument("--fold-index", type=int, default=0)
     parser.add_argument("--out", default="mri_binary/fold_0")
     parser.add_argument("--pretrained", action="store_true", help="Use torchvision ImageNet weights if available.")

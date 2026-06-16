@@ -8,11 +8,8 @@ from torch.utils.data import Dataset
 from sklearn.model_selection import train_test_split
 
 from .common import LABELS, LABEL_TO_ID, SPLITS, read_text
-from .data.labels import EXCEL_MULTICLASS_LABELS, EXCEL_TEXT_COLUMNS, normalize_multiclass_label
+from .data.labels import EXCEL_TEXT_COLUMNS
 from .data.splits import assign_kfold_splits
-
-
-from .data.labels import EXCEL_MULTICLASS_LABEL_MAP  # Backward-compatible re-export.
 
 
 def parse_labels_arg(value):
@@ -112,10 +109,6 @@ def _label_from_excel_filename(path):
     raise ValueError(f"Cannot infer binary label from Excel filename: {path.name}")
 
 
-def _excel_multiclass_label(value):
-    label = _clean_cell(value)
-    return normalize_multiclass_label(label)
-
 
 def _join_excel_row(row):
     parts = []
@@ -169,29 +162,16 @@ def _split_excel_kfold(records, seed=42, n_folds=5, fold_index=0, val_ratio=0.1,
     return assign_kfold_splits(records, seed=seed, n_folds=n_folds, fold_index=fold_index, val_ratio=val_ratio, split_label=split_label)
 
 
-def discover_excel_labels(data, task="multiclass"):
-    if task == "binary":
-        found = {_label_from_excel_filename(path) for path in _excel_paths(data)}
-        return [label for label in sorted(found, key=lambda item: LABEL_TO_ID[item])]
-    if task == "multitask":
-        return ["non_i63", "I63_INFARCTION"]
-    labels = set()
-    for path in _excel_paths(data):
-        df = _read_excel(path)
-        if "LABEL" not in df.columns:
-            raise ValueError(f"Missing LABEL column in {path}")
-        labels.update(_excel_multiclass_label(value) for value in df["LABEL"].tolist())
-    labels = {label for label in labels if label}
-    ordered = [label for label in EXCEL_MULTICLASS_LABELS if label in labels]
-    ordered.extend(sorted(labels - set(EXCEL_MULTICLASS_LABELS)))
-    return ordered
+def discover_excel_labels(data, task="binary"):
+    found = {_label_from_excel_filename(path) for path in _excel_paths(data)}
+    return [label for label in sorted(found, key=lambda item: LABEL_TO_ID[item])]
 
 
 def collect_excel_text(
     data,
     labels=None,
     label_to_id=None,
-    task="multiclass",
+    task="binary",
     seed=42,
     val_ratio=0.1,
     test_ratio=0.1,
@@ -216,23 +196,6 @@ def collect_excel_text(
         binary_label_name = _label_from_excel_filename(path)
         for index, row in df.iterrows():
             row_dict = row.to_dict()
-            raw_multiclass_label = _clean_cell(row_dict.get("LABEL"))
-            multiclass_label = _excel_multiclass_label(raw_multiclass_label)
-            if task == "binary":
-                label_name = binary_label_name
-            elif task == "multitask":
-                label_name = "I63_INFARCTION" if multiclass_label == "I63_INFARCTION" else "non_i63"
-            else:
-                label_name = multiclass_label
-            if not label_name:
-                skipped.append(f"{path}:{index + 2}:missing_label")
-                continue
-            if task == "multitask" and multiclass_label not in EXCEL_MULTICLASS_LABELS:
-                skipped.append(f"{path}:{index + 2}:unknown_aux_label:{raw_multiclass_label}")
-                continue
-            if label_name not in label_to_id:
-                skipped.append(f"{path}:{index + 2}:unknown_label:{label_name}")
-                continue
             text = _join_excel_row(row_dict)
             if not text:
                 skipped.append(f"{path}:{index + 2}:empty_text")
@@ -240,22 +203,15 @@ def collect_excel_text(
             record = {
                 "id": f"{path.stem}_{index + 2:06d}",
                 "split": "",
-                "label": label_to_id[label_name],
-                "label_name": label_name,
+                "label": label_to_id[binary_label_name],
+                "label_name": binary_label_name,
                 "text_path": str(path),
                 "text": text,
                 "fields": _excel_row_fields(row_dict),
                 "source_file": path.name,
                 "row_index": index + 2,
                 "binary_label_name": binary_label_name,
-                "multiclass_label_name": multiclass_label,
-                "raw_multiclass_label_name": raw_multiclass_label,
             }
-            if multiclass_label in EXCEL_MULTICLASS_LABELS:
-                record["multiclass_label"] = EXCEL_MULTICLASS_LABELS.index(multiclass_label)
-            if task == "multitask":
-                record["aux_label"] = EXCEL_MULTICLASS_LABELS.index(multiclass_label)
-                record["aux_label_name"] = multiclass_label
             records.append(record)
     if split_strategy == "kfold":
         records = _split_excel_kfold(
@@ -520,16 +476,12 @@ class TextDataset(Dataset):
         item["labels"] = torch.tensor(row["label"], dtype=torch.long)
         if self.sample_weights is not None:
             item["sample_weight"] = torch.tensor(self.sample_weights[row["id"]], dtype=torch.float32)
-        if "aux_label" in row and row["aux_label"] != "":
-            item["aux_labels"] = torch.tensor(row["aux_label"], dtype=torch.long)
-        if "multiclass_label" in row and row["multiclass_label"] != "":
-            item["multiclass_labels"] = torch.tensor(row["multiclass_label"], dtype=torch.long)
         item["id"] = row["id"]
         return item
 
 
 def save_records(path, records):
-    optional_fields = ["source_file", "row_index", "binary_label_name", "multiclass_label", "multiclass_label_name", "raw_multiclass_label_name", "aux_label", "aux_label_name", "fold"]
+    optional_fields = ["source_file", "row_index", "binary_label_name", "fold"]
     fieldnames = ["id", "split", "label", "label_name", "text_path"]
     fieldnames.extend(field for field in optional_fields if any(field in row for row in records))
     with open(path, "w", newline="", encoding="utf-8") as f:

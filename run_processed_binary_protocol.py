@@ -28,8 +28,7 @@ def parse_args():
     p.add_argument("--accum", type=int, default=2)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--threshold", type=float, default=0.5)
-    p.add_argument("--thresholds", default="0.30,0.35,0.40,0.45,0.50")
-    p.add_argument("--pooling", choices=["cls", "attention", "gated"], default="attention")
+    p.add_argument("--pooling", default="cls,attention,gated", help="Comma-separated list of pooling methods: cls, attention, gated")
     p.add_argument("--workers", type=int, default=0)
     p.add_argument("--folds", type=int, default=5)
     p.add_argument("--val-ratio", type=float, default=0.1)
@@ -41,7 +40,7 @@ def parse_args():
     return p.parse_args()
 
 
-def common_train_args(args, data, out):
+def common_train_args(args, data, out, pooling):
     cmd = [
         sys.executable,
         "train_text.py",
@@ -81,10 +80,8 @@ def common_train_args(args, data, out):
         args.seed,
         "--threshold",
         args.threshold,
-        "--thresholds",
-        args.thresholds,
         "--pooling",
-        args.pooling,
+        pooling,
         "--input-mode",
         "concat",
         "--workers",
@@ -97,8 +94,8 @@ def common_train_args(args, data, out):
     return cmd
 
 
-def large_cmd(args, out):
-    cmd = common_train_args(args, args.large_csv, out)
+def large_cmd(args, out, pooling):
+    cmd = common_train_args(args, args.large_csv, out, pooling)
     cmd.extend(
         [
             "--split-strategy",
@@ -116,8 +113,8 @@ def large_cmd(args, out):
     return cmd
 
 
-def small_fold_cmd(args, fold, out):
-    cmd = common_train_args(args, args.small_csv, out)
+def small_fold_cmd(args, fold, out, pooling):
+    cmd = common_train_args(args, args.small_csv, out, pooling)
     cmd.extend(
         [
             "--split-strategy",
@@ -139,8 +136,8 @@ def small_fold_cmd(args, fold, out):
     return cmd
 
 
-def finetune_fold_cmd(args, fold, out, checkpoint):
-    cmd = small_fold_cmd(args, fold, out)
+def finetune_fold_cmd(args, fold, out, checkpoint, pooling):
+    cmd = small_fold_cmd(args, fold, out, pooling)
     cmd.extend(["--init-checkpoint", checkpoint])
     if args.finetune_epochs is not None:
         idx = cmd.index("--epochs") + 1
@@ -156,6 +153,13 @@ def main():
     output_dir = Path(args.output_dir)
     if not args.dry_run:
         output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Parse pooling methods
+    pooling_methods = [p.strip().lower() for p in args.pooling.split(",") if p.strip()]
+    for p in pooling_methods:
+        if p not in ("cls", "attention", "gated"):
+            print(f"Error: Unsupported pooling method '{p}'. Choose from cls, attention, gated.", file=sys.stderr)
+            sys.exit(1)
 
     # Check if processed CSVs exist; if not, run preprocess.py automatically
     small_csv_path = Path(args.small_csv)
@@ -191,46 +195,58 @@ def main():
     print("cross: model_2 evaluates all processed_700; model_1 folds evaluate model_2 val/test split.")
     print("model_3: initialize from model_2 checkpoint, fine-tune each processed_700 fold, test matching fold.")
 
-    large_out = str(output_dir / "model_2_processed_9937_random")
-    run_stage(
-        "model_2 processed_9937 random 70/10/20 + evaluate all processed_700",
-        large_cmd(args, large_out),
-        Path(large_out) / "metrics.json",
-        force=args.force,
-        dry_run=args.dry_run,
-        cwd=ROOT,
-    )
+    # Run protocol for each pooling method
+    for pooling in pooling_methods:
+        print("\n" + "=" * 80)
+        print(f"               RUNNING PROTOCOL FOR POOLING: {pooling.upper()}")
+        print("=" * 80)
 
-    for fold in range(args.folds):
-        out = str(output_dir / "model_1_processed_700_5fold" / f"fold_{fold}")
+        pooling_dir = output_dir / pooling
+        if not args.dry_run:
+            pooling_dir.mkdir(parents=True, exist_ok=True)
+
+        large_out = str(pooling_dir / "model_2_processed_9937_random")
         run_stage(
-            f"model_1 processed_700 fold {fold}: train=70%, val=10%, test=20% + evaluate processed_9937 val/test",
-            small_fold_cmd(args, fold, out),
-            Path(out) / "metrics.json",
+            f"[{pooling.upper()}] model_2 processed_9937 random 70/10/20 + evaluate all processed_700",
+            large_cmd(args, large_out, pooling),
+            Path(large_out) / "metrics.json",
             force=args.force,
             dry_run=args.dry_run,
             cwd=ROOT,
         )
+
+        for fold in range(args.folds):
+            out = str(pooling_dir / "model_1_processed_700_5fold" / f"fold_{fold}")
+            run_stage(
+                f"[{pooling.upper()}] model_1 processed_700 fold {fold}: train=70%, val=10%, test=20% + evaluate processed_9937 val/test",
+                small_fold_cmd(args, fold, out, pooling),
+                Path(out) / "metrics.json",
+                force=args.force,
+                dry_run=args.dry_run,
+                cwd=ROOT,
+            )
+        if not args.dry_run:
+            aggregate_experiment(pooling_dir, "model_1_processed_700_5fold", args.folds)
+
+        large_checkpoint = str(Path(large_out) / "best_auc_phobert")
+        for fold in range(args.folds):
+            out = str(pooling_dir / "model_3_large_to_small_finetune_5fold" / f"fold_{fold}")
+            run_stage(
+                f"[{pooling.upper()}] model_3 fine-tune large checkpoint on processed_700 fold {fold}",
+                finetune_fold_cmd(args, fold, out, large_checkpoint, pooling),
+                Path(out) / "metrics.json",
+                force=args.force,
+                dry_run=args.dry_run,
+                cwd=ROOT,
+            )
+        if not args.dry_run:
+            aggregate_experiment(pooling_dir, "model_3_large_to_small_finetune_5fold", args.folds)
+
     if not args.dry_run:
-        aggregate_experiment(output_dir, "model_1_processed_700_5fold", args.folds)
-
-    large_checkpoint = str(Path(large_out) / "best_auc_phobert")
-    for fold in range(args.folds):
-        out = str(output_dir / "model_3_large_to_small_finetune_5fold" / f"fold_{fold}")
-        run_stage(
-            f"model_3 fine-tune large checkpoint on processed_700 fold {fold}",
-            finetune_fold_cmd(args, fold, out, large_checkpoint),
-            Path(out) / "metrics.json",
-            force=args.force,
-            dry_run=args.dry_run,
-            cwd=ROOT,
-        )
-    if not args.dry_run:
-        aggregate_experiment(output_dir, "model_3_large_to_small_finetune_5fold", args.folds)
-        print_protocol_summary_report(output_dir, args.folds)
+        print_protocol_summary_report(output_dir, pooling_methods, args.folds)
 
 
-def print_protocol_summary_report(output_dir, folds):
+def print_protocol_summary_report(output_dir, pooling_methods, folds):
     output_dir = Path(output_dir)
     
     def load_json(path):
@@ -249,7 +265,7 @@ def print_protocol_summary_report(output_dir, folds):
             return dict(split_data["binary_i63"])
         return dict(split_data)
 
-    def get_fold_stats(parent_folder, split_key):
+    def get_fold_stats(pooling_dir, parent_folder, split_key):
         accuracy_list = []
         f1_list = []
         auc_list = []
@@ -259,7 +275,7 @@ def print_protocol_summary_report(output_dir, folds):
         ece_list = []
         
         for fold in range(folds):
-            path = output_dir / parent_folder / f"fold_{fold}" / "metrics.json"
+            path = pooling_dir / parent_folder / f"fold_{fold}" / "metrics.json"
             data = load_json(path)
             if data:
                 metrics = get_binary_metrics(data.get(split_key))
@@ -295,53 +311,58 @@ def print_protocol_summary_report(output_dir, folds):
             "ece": mean_std(ece_list),
         }
 
-    # Load Model 2
-    model2_path = output_dir / "model_2_processed_9937_random" / "metrics.json"
-    model2_data = load_json(model2_path)
-    model2_test = get_binary_metrics(model2_data.get("test")) if model2_data else None
-    model2_cross = get_binary_metrics(model2_data.get("processed_700_all_eval")) if model2_data else None
+    # Gather results for all pooling methods
+    pooling_results = {}
+    for pooling in pooling_methods:
+        pooling_dir = output_dir / pooling
+        
+        # Load Model 2
+        model2_path = pooling_dir / "model_2_processed_9937_random" / "metrics.json"
+        model2_data = load_json(model2_path)
+        model2_test = get_binary_metrics(model2_data.get("test")) if model2_data else None
+        model2_cross = get_binary_metrics(model2_data.get("processed_700_all_eval")) if model2_data else None
 
-    # Load Model 1
-    model1_stats = get_fold_stats("model_1_processed_700_5fold", "test")
-    model1_cross_val = get_fold_stats("model_1_processed_700_5fold", "processed_9937_random_val")
-    model1_cross_test = get_fold_stats("model_1_processed_700_5fold", "processed_9937_random_test")
+        # Load Model 1
+        model1_stats = get_fold_stats(pooling_dir, "model_1_processed_700_5fold", "test")
+        model1_cross_val = get_fold_stats(pooling_dir, "model_1_processed_700_5fold", "processed_9937_random_val")
+        model1_cross_test = get_fold_stats(pooling_dir, "model_1_processed_700_5fold", "processed_9937_random_test")
 
-    # Load Model 3
-    model3_stats = get_fold_stats("model_3_large_to_small_finetune_5fold", "test")
-    model3_cross_val = get_fold_stats("model_3_large_to_small_finetune_5fold", "processed_9937_random_val")
-    model3_cross_test = get_fold_stats("model_3_large_to_small_finetune_5fold", "processed_9937_random_test")
+        # Load Model 3
+        model3_stats = get_fold_stats(pooling_dir, "model_3_large_to_small_finetune_5fold", "test")
+        model3_cross_val = get_fold_stats(pooling_dir, "model_3_large_to_small_finetune_5fold", "processed_9937_random_val")
+        model3_cross_test = get_fold_stats(pooling_dir, "model_3_large_to_small_finetune_5fold", "processed_9937_random_test")
+        
+        pooling_results[pooling] = {
+            "model2_test": model2_test,
+            "model2_cross": model2_cross,
+            "model1_stats": model1_stats,
+            "model1_cross_val": model1_cross_val,
+            "model1_cross_test": model1_cross_test,
+            "model3_stats": model3_stats,
+            "model3_cross_val": model3_cross_val,
+            "model3_cross_test": model3_cross_test,
+        }
 
-    print("\n" + "=" * 80)
-    print("                      FINAL PROTOCOL SUMMARY REPORT")
-    print("=" * 80)
+    # Print individual reports
+    for pooling in pooling_methods:
+        res = pooling_results[pooling]
+        model1_stats = res["model1_stats"]
+        model2_test = res["model2_test"]
+        model2_cross = res["model2_cross"]
+        model1_cross_val = res["model1_cross_val"]
+        model1_cross_test = res["model1_cross_test"]
+        model3_stats = res["model3_stats"]
+        model3_cross_val = res["model3_cross_val"]
+        model3_cross_test = res["model3_cross_test"]
 
-    # PART 1
-    print("\nPART 1: Model 1 (Processed 700 - 5-Fold)")
-    print("-" * 80)
-    print("Reported on Held-Out Test Fold (mean ± std over 5 folds):")
-    for metric_name, key in [
-        ("Accuracy", "accuracy"),
-        ("F1-score", "f1"),
-        ("AUC", "auc"),
-        ("Sensitivity", "sensitivity"),
-        ("Specificity", "specificity"),
-        ("Brier Score", "brier_score"),
-        ("ECE", "ece"),
-    ]:
-        val = model1_stats.get(key)
-        if val and val[0] is not None:
-            if key in ("brier_score", "ece"):
-                print(f"- {metric_name:<19}: {val[0]:>6.4f} ± {val[1]:.4f}")
-            else:
-                print(f"- {metric_name:<19}: {val[0]*100:>6.2f}% ± {val[1]*100:.2f}%")
-        else:
-            print(f"- {metric_name:<19}: N/A")
+        print("\n" + "=" * 80)
+        print(f"               FINAL PROTOCOL SUMMARY REPORT (POOLING: {pooling.upper()})")
+        print("=" * 80)
 
-    # PART 2
-    print("\nPART 2: Model 2 (Processed 9937 - Random Split)")
-    print("-" * 80)
-    print("Reported on Test Split (single run):")
-    if model2_test:
+        # PART 1
+        print("\nPART 1: Model 1 (Processed 700 - 5-Fold)")
+        print("-" * 80)
+        print("Reported on Held-Out Test Fold (mean ± std over 5 folds):")
         for metric_name, key in [
             ("Accuracy", "accuracy"),
             ("F1-score", "f1"),
@@ -351,22 +372,67 @@ def print_protocol_summary_report(output_dir, folds):
             ("Brier Score", "brier_score"),
             ("ECE", "ece"),
         ]:
-            val = model2_test.get(key)
-            if val is not None and not np.isnan(val):
+            val = model1_stats.get(key)
+            if val and val[0] is not None:
                 if key in ("brier_score", "ece"):
-                    print(f"- {metric_name:<19}: {val:>6.4f}")
+                    print(f"- {metric_name:<19}: {val[0]:>6.4f} ± {val[1]:.4f}")
                 else:
-                    print(f"- {metric_name:<19}: {val*100:>6.2f}%")
+                    print(f"- {metric_name:<19}: {val[0]*100:>6.2f}% ± {val[1]*100:.2f}%")
             else:
                 print(f"- {metric_name:<19}: N/A")
-    else:
-        print("Metrics file not found or empty.")
 
-    # PART 3
-    print("\nPART 3: Cross Evaluation")
-    print("-" * 80)
-    print("A) Model 2 evaluated on ALL Processed 700 (single run):")
-    if model2_cross:
+        # PART 2
+        print("\nPART 2: Model 2 (Processed 9937 - Random Split)")
+        print("-" * 80)
+        print("Reported on Test Split (single run):")
+        if model2_test:
+            for metric_name, key in [
+                ("Accuracy", "accuracy"),
+                ("F1-score", "f1"),
+                ("AUC", "auc"),
+                ("Sensitivity", "sensitivity"),
+                ("Specificity", "specificity"),
+                ("Brier Score", "brier_score"),
+                ("ECE", "ece"),
+            ]:
+                val = model2_test.get(key)
+                if val is not None and not np.isnan(val):
+                    if key in ("brier_score", "ece"):
+                        print(f"- {metric_name:<19}: {val:>6.4f}")
+                    else:
+                        print(f"- {metric_name:<19}: {val*100:>6.2f}%")
+                else:
+                    print(f"- {metric_name:<19}: N/A")
+        else:
+            print("Metrics file not found or empty.")
+
+        # PART 3
+        print("\nPART 3: Cross Evaluation")
+        print("-" * 80)
+        print("A) Model 2 evaluated on ALL Processed 700 (single run):")
+        if model2_cross:
+            for metric_name, key in [
+                ("Accuracy", "accuracy"),
+                ("F1-score", "f1"),
+                ("AUC", "auc"),
+                ("Sensitivity", "sensitivity"),
+                ("Specificity", "specificity"),
+                ("Brier Score", "brier_score"),
+                ("ECE", "ece"),
+            ]:
+                val = model2_cross.get(key)
+                if val is not None and not np.isnan(val):
+                    if key in ("brier_score", "ece"):
+                        print(f"- {metric_name:<19}: {val:>6.4f}")
+                    else:
+                        print(f"- {metric_name:<19}: {val*100:>6.2f}%")
+                else:
+                    print(f"- {metric_name:<19}: N/A")
+        else:
+            print("Metrics file not found or empty.")
+
+        print("\nB) Model 1 folds evaluated on Model 2 splits (mean ± std over 5 folds):")
+        print("* On Model 2 Validation Split:")
         for metric_name, key in [
             ("Accuracy", "accuracy"),
             ("F1-score", "f1"),
@@ -376,117 +442,170 @@ def print_protocol_summary_report(output_dir, folds):
             ("Brier Score", "brier_score"),
             ("ECE", "ece"),
         ]:
-            val = model2_cross.get(key)
-            if val is not None and not np.isnan(val):
+            val = model1_cross_val.get(key)
+            if val and val[0] is not None:
                 if key in ("brier_score", "ece"):
-                    print(f"- {metric_name:<19}: {val:>6.4f}")
+                    print(f"  - {metric_name:<17}: {val[0]:>6.4f} ± {val[1]:.4f}")
                 else:
-                    print(f"- {metric_name:<19}: {val*100:>6.2f}%")
+                    print(f"  - {metric_name:<17}: {val[0]*100:>6.2f}% ± {val[1]*100:.2f}%")
+            else:
+                print(f"  - {metric_name:<17}: N/A")
+
+        print("* On Model 2 Test Split:")
+        for metric_name, key in [
+            ("Accuracy", "accuracy"),
+            ("F1-score", "f1"),
+            ("AUC", "auc"),
+            ("Sensitivity", "sensitivity"),
+            ("Specificity", "specificity"),
+            ("Brier Score", "brier_score"),
+            ("ECE", "ece"),
+        ]:
+            val = model1_cross_test.get(key)
+            if val and val[0] is not None:
+                if key in ("brier_score", "ece"):
+                    print(f"  - {metric_name:<17}: {val[0]:>6.4f} ± {val[1]:.4f}")
+                else:
+                    print(f"  - {metric_name:<17}: {val[0]*100:>6.2f}% ± {val[1]*100:.2f}%")
+            else:
+                print(f"  - {metric_name:<17}: N/A")
+
+        # PART 4
+        print("\nPART 4: Model 3 (Fine-tuned Model 2 Checkpoint on Processed 700 Folds)")
+        print("-" * 80)
+        print("Reported on Held-Out Test Fold (mean ± std over 5 folds):")
+        for metric_name, key in [
+            ("Accuracy", "accuracy"),
+            ("F1-score", "f1"),
+            ("AUC", "auc"),
+            ("Sensitivity", "sensitivity"),
+            ("Specificity", "specificity"),
+            ("Brier Score", "brier_score"),
+            ("ECE", "ece"),
+        ]:
+            val = model3_stats.get(key)
+            if val and val[0] is not None:
+                if key in ("brier_score", "ece"):
+                    print(f"- {metric_name:<19}: {val[0]:>6.4f} ± {val[1]:.4f}")
+                else:
+                    print(f"- {metric_name:<19}: {val[0]*100:>6.2f}% ± {val[1]*100:.2f}%")
             else:
                 print(f"- {metric_name:<19}: N/A")
-    else:
-        print("Metrics file not found or empty.")
 
-    print("\nB) Model 1 folds evaluated on Model 2 splits (mean ± std over 5 folds):")
-    print("* On Model 2 Validation Split:")
-    for metric_name, key in [
-        ("Accuracy", "accuracy"),
-        ("F1-score", "f1"),
-        ("AUC", "auc"),
-        ("Sensitivity", "sensitivity"),
-        ("Specificity", "specificity"),
-        ("Brier Score", "brier_score"),
-        ("ECE", "ece"),
-    ]:
-        val = model1_cross_val.get(key)
-        if val and val[0] is not None:
-            if key in ("brier_score", "ece"):
-                print(f"  - {metric_name:<17}: {val[0]:>6.4f} ± {val[1]:.4f}")
+        print("\nReported on Model 2 Validation Split (mean ± std over 5 folds):")
+        for metric_name, key in [
+            ("Accuracy", "accuracy"),
+            ("F1-score", "f1"),
+            ("AUC", "auc"),
+            ("Sensitivity", "sensitivity"),
+            ("Specificity", "specificity"),
+            ("Brier Score", "brier_score"),
+            ("ECE", "ece"),
+        ]:
+            val = model3_cross_val.get(key)
+            if val and val[0] is not None:
+                if key in ("brier_score", "ece"):
+                    print(f"- {metric_name:<19}: {val[0]:>6.4f} ± {val[1]:.4f}")
+                else:
+                    print(f"- {metric_name:<19}: {val[0]*100:>6.2f}% ± {val[1]*100:.2f}%")
             else:
-                print(f"  - {metric_name:<17}: {val[0]*100:>6.2f}% ± {val[1]*100:.2f}%")
-        else:
-            print(f"  - {metric_name:<17}: N/A")
+                print(f"- {metric_name:<19}: N/A")
 
-    print("* On Model 2 Test Split:")
-    for metric_name, key in [
-        ("Accuracy", "accuracy"),
-        ("F1-score", "f1"),
-        ("AUC", "auc"),
-        ("Sensitivity", "sensitivity"),
-        ("Specificity", "specificity"),
-        ("Brier Score", "brier_score"),
-        ("ECE", "ece"),
-    ]:
-        val = model1_cross_test.get(key)
-        if val and val[0] is not None:
-            if key in ("brier_score", "ece"):
-                print(f"  - {metric_name:<17}: {val[0]:>6.4f} ± {val[1]:.4f}")
+        print("\nReported on Model 2 Test Split (mean ± std over 5 folds):")
+        for metric_name, key in [
+            ("Accuracy", "accuracy"),
+            ("F1-score", "f1"),
+            ("AUC", "auc"),
+            ("Sensitivity", "sensitivity"),
+            ("Specificity", "specificity"),
+            ("Brier Score", "brier_score"),
+            ("ECE", "ece"),
+        ]:
+            val = model3_cross_test.get(key)
+            if val and val[0] is not None:
+                if key in ("brier_score", "ece"):
+                    print(f"- {metric_name:<19}: {val[0]:>6.4f} ± {val[1]:.4f}")
+                else:
+                    print(f"- {metric_name:<19}: {val[0]*100:>6.2f}% ± {val[1]*100:.2f}%")
             else:
-                print(f"  - {metric_name:<17}: {val[0]*100:>6.2f}% ± {val[1]*100:.2f}%")
-        else:
-            print(f"  - {metric_name:<17}: N/A")
+                print(f"- {metric_name:<19}: N/A")
 
-    # PART 4
-    print("\nPART 4: Model 3 (Fine-tuned Model 2 Checkpoint on Processed 700 Folds)")
-    print("-" * 80)
-    print("Reported on Held-Out Test Fold (mean ± std over 5 folds):")
-    for metric_name, key in [
-        ("Accuracy", "accuracy"),
-        ("F1-score", "f1"),
-        ("AUC", "auc"),
-        ("Sensitivity", "sensitivity"),
-        ("Specificity", "specificity"),
-        ("Brier Score", "brier_score"),
-        ("ECE", "ece"),
-    ]:
-        val = model3_stats.get(key)
+        print("\n" + "=" * 80)
+
+    # Print Side-By-Side Comparison Table
+    print("\n" + "=" * 110)
+    print("                           POOLING METHOD COMPARISON SUMMARY")
+    print("=" * 110)
+    
+    def format_mean_std(val, is_percentage=True):
         if val and val[0] is not None:
-            if key in ("brier_score", "ece"):
-                print(f"- {metric_name:<19}: {val[0]:>6.4f} ± {val[1]:.4f}")
+            if is_percentage:
+                return f"{val[0]*100:.2f}% ± {val[1]*100:.2f}%"
             else:
-                print(f"- {metric_name:<19}: {val[0]*100:>6.2f}% ± {val[1]*100:.2f}%")
-        else:
-            print(f"- {metric_name:<19}: N/A")
+                return f"{val[0]:.4f} ± {val[1]:.4f}"
+        return "N/A"
 
-    print("\nReported on Model 2 Validation Split (mean ± std over 5 folds):")
-    for metric_name, key in [
-        ("Accuracy", "accuracy"),
-        ("F1-score", "f1"),
-        ("AUC", "auc"),
-        ("Sensitivity", "sensitivity"),
-        ("Specificity", "specificity"),
-        ("Brier Score", "brier_score"),
-        ("ECE", "ece"),
-    ]:
-        val = model3_cross_val.get(key)
-        if val and val[0] is not None:
-            if key in ("brier_score", "ece"):
-                print(f"- {metric_name:<19}: {val[0]:>6.4f} ± {val[1]:.4f}")
+    def format_single_val(val, is_percentage=True):
+        if val is not None and not np.isnan(val):
+            if is_percentage:
+                return f"{val*100:.2f}%"
             else:
-                print(f"- {metric_name:<19}: {val[0]*100:>6.2f}% ± {val[1]*100:.2f}%")
-        else:
-            print(f"- {metric_name:<19}: N/A")
+                return f"{val:.4f}"
+        return "N/A"
 
-    print("\nReported on Model 2 Test Split (mean ± std over 5 folds):")
-    for metric_name, key in [
-        ("Accuracy", "accuracy"),
-        ("F1-score", "f1"),
-        ("AUC", "auc"),
-        ("Sensitivity", "sensitivity"),
-        ("Specificity", "specificity"),
-        ("Brier Score", "brier_score"),
-        ("ECE", "ece"),
-    ]:
-        val = model3_cross_test.get(key)
-        if val and val[0] is not None:
-            if key in ("brier_score", "ece"):
-                print(f"- {metric_name:<19}: {val[0]:>6.4f} ± {val[1]:.4f}")
-            else:
-                print(f"- {metric_name:<19}: {val[0]*100:>6.2f}% ± {val[1]*100:.2f}%")
-        else:
-            print(f"- {metric_name:<19}: N/A")
+    print("\n--- MODEL 1 (Processed 700 - 5-Fold, Held-Out Test Fold) ---")
+    print(f"{'Pooling':12} | {'Accuracy':18} | {'F1-score':18} | {'AUC':18} | {'Sensitivity':18} | {'Specificity':18}")
+    print("-" * 110)
+    for pooling in pooling_methods:
+        stats = pooling_results[pooling]["model1_stats"]
+        print(f"{pooling:<12} | "
+              f"{format_mean_std(stats.get('accuracy')):<18} | "
+              f"{format_mean_std(stats.get('f1')):<18} | "
+              f"{format_mean_std(stats.get('auc')):<18} | "
+              f"{format_mean_std(stats.get('sensitivity')):<18} | "
+              f"{format_mean_std(stats.get('specificity')):<18}")
 
-    print("\n" + "=" * 80)
+    print("\n--- MODEL 2 (Processed 9937 - Random Split, Test Split) ---")
+    print(f"{'Pooling':12} | {'Accuracy':10} | {'F1-score':10} | {'AUC':10} | {'Sensitivity':12} | {'Specificity':12}")
+    print("-" * 75)
+    for pooling in pooling_methods:
+        metrics = pooling_results[pooling]["model2_test"]
+        if metrics:
+            print(f"{pooling:<12} | "
+                  f"{format_single_val(metrics.get('accuracy')):<10} | "
+                  f"{format_single_val(metrics.get('f1')):<10} | "
+                  f"{format_single_val(metrics.get('auc')):<10} | "
+                  f"{format_single_val(metrics.get('sensitivity')):<12} | "
+                  f"{format_single_val(metrics.get('specificity')):<12}")
+        else:
+            print(f"{pooling:<12} | N/A")
+
+    print("\n--- MODEL 3 (Fine-tuned Model 2 Checkpoint on Processed 700 Folds, Held-Out Test Fold) ---")
+    print(f"{'Pooling':12} | {'Accuracy':18} | {'F1-score':18} | {'AUC':18} | {'Sensitivity':18} | {'Specificity':18}")
+    print("-" * 110)
+    for pooling in pooling_methods:
+        stats = pooling_results[pooling]["model3_stats"]
+        print(f"{pooling:<12} | "
+              f"{format_mean_std(stats.get('accuracy')):<18} | "
+              f"{format_mean_std(stats.get('f1')):<18} | "
+              f"{format_mean_std(stats.get('auc')):<18} | "
+              f"{format_mean_std(stats.get('sensitivity')):<18} | "
+              f"{format_mean_std(stats.get('specificity')):<18}")
+
+    print("\n--- MODEL 3 (Fine-tuned, Evaluated back on Model 2 Test Split) ---")
+    print(f"{'Pooling':12} | {'Accuracy':18} | {'F1-score':18} | {'AUC':18} | {'Sensitivity':18} | {'Specificity':18}")
+    print("-" * 110)
+    for pooling in pooling_methods:
+        stats = pooling_results[pooling]["model3_cross_test"]
+        print(f"{pooling:<12} | "
+              f"{format_mean_std(stats.get('accuracy')):<18} | "
+              f"{format_mean_std(stats.get('f1')):<18} | "
+              f"{format_mean_std(stats.get('auc')):<18} | "
+              f"{format_mean_std(stats.get('sensitivity')):<18} | "
+              f"{format_mean_std(stats.get('specificity')):<18}")
+
+    print("\n" + "=" * 110)
+
 
 
 if __name__ == "__main__":
