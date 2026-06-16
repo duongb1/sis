@@ -57,6 +57,15 @@ def print_key_summary(name, summary):
         "test.auc",
         "test.sensitivity",
         "test.specificity",
+        "test.brier_score",
+        "test.ece",
+        "test.binary_i63.accuracy",
+        "test.binary_i63.f1",
+        "test.binary_i63.auc",
+        "test.binary_i63.sensitivity",
+        "test.binary_i63.specificity",
+        "test.binary_i63.brier_score",
+        "test.binary_i63.ece",
     ]
     print(f"5-fold mean ± std: {name}")
     for key in keys:
@@ -65,23 +74,16 @@ def print_key_summary(name, summary):
             print(f"{key}: {stats['mean']:.3f} ± {stats['std']:.3f}")
 
 
-def with_balanced_accuracy(metrics):
-    metrics = dict(metrics)
-    if "balanced_accuracy" not in metrics and "sensitivity" in metrics and "specificity" in metrics:
-        metrics["balanced_accuracy"] = float((metrics["sensitivity"] + metrics["specificity"]) / 2.0)
-    return metrics
-
-
 def extract_test_binary_metrics(metrics):
     test = metrics.get("test", {})
     if "primary_binary" in test:
         primary = test["primary_binary"]
         if "binary_i63" in primary:
-            return with_balanced_accuracy(primary["binary_i63"])
-        return with_balanced_accuracy(primary)
+            return dict(primary["binary_i63"])
+        return dict(primary)
     if "binary_i63" in test:
-        return with_balanced_accuracy(test["binary_i63"])
-    return with_balanced_accuracy(test)
+        return dict(test["binary_i63"])
+    return dict(test)
 
 
 def confusion_counts(metrics):
@@ -106,7 +108,7 @@ def collect_model_report(output_dir, folder, folds):
             if key in selected:
                 row[f"selected.{key}"] = float(selected[key])
         if "val" in data:
-            val_metrics = with_balanced_accuracy(data["val"])
+            val_metrics = dict(data["val"])
             for key, value in val_metrics.items():
                 if isinstance(value, (int, float)) and not isinstance(value, bool):
                     row[f"selected.val.{key}"] = float(value)
@@ -132,14 +134,13 @@ def print_threshold_sweep_table(output_dir, folder, folds):
             return
         sweep = load_json(path).get("binary_threshold_sweep", {}).get("test", {})
         for threshold, metrics in sweep.items():
-            metrics = with_balanced_accuracy(metrics)
             rows_by_threshold.setdefault(threshold, []).append(
-                {f"test.{key}": value for key, value in metrics.items() if key in {"accuracy", "f1", "auc", "sensitivity", "specificity", "balanced_accuracy"}}
+                {f"test.{key}": value for key, value in metrics.items() if key in {"accuracy", "f1", "auc", "sensitivity", "specificity", "brier_score", "ece"}}
             )
     if not rows_by_threshold:
         return
     print(f"\nThreshold sweep: {folder}")
-    print("threshold | acc       | f1        | auc       | sens      | spec      | bal_acc")
+    print("threshold | acc       | f1        | auc       | sens      | spec      | brier     | ece")
     for threshold in sorted(rows_by_threshold, key=lambda item: float(item)):
         summary = summarize_metric_rows(rows_by_threshold[threshold])
         print(
@@ -149,7 +150,8 @@ def print_threshold_sweep_table(output_dir, folder, folds):
             f"{mean_std_text(summary, 'test.auc'):<9} | "
             f"{mean_std_text(summary, 'test.sensitivity'):<9} | "
             f"{mean_std_text(summary, 'test.specificity'):<9} | "
-            f"{mean_std_text(summary, 'test.balanced_accuracy'):<9}"
+            f"{mean_std_text(summary, 'test.brier_score'):<9} | "
+            f"{mean_std_text(summary, 'test.ece'):<9}"
         )
 
 
@@ -179,7 +181,7 @@ def print_final_small_report(output_dir, args):
 
     print("\n" + "-" * 80)
     print("5-fold summary: small models")
-    print("Model                         Acc       F1        AUC       Sens      Spec      BalAcc")
+    print("Model                         Acc       F1        AUC       Sens      Spec      Brier     ECE")
     for name, report in reports.items():
         summary = report["summary"]
         print(
@@ -189,7 +191,8 @@ def print_final_small_report(output_dir, args):
             f"{mean_std_text(summary, 'test.auc'):<9} "
             f"{mean_std_text(summary, 'test.sensitivity'):<9} "
             f"{mean_std_text(summary, 'test.specificity'):<9} "
-            f"{mean_std_text(summary, 'test.balanced_accuracy'):<9}"
+            f"{mean_std_text(summary, 'test.brier_score'):<9} "
+            f"{mean_std_text(summary, 'test.ece'):<9}"
         )
 
     print("\nAggregate confusion counts:")
@@ -212,7 +215,6 @@ def print_final_small_report(output_dir, args):
         ("best_auc", "test.auc"),
         ("best_sensitivity", "test.sensitivity"),
         ("best_specificity", "test.specificity"),
-        ("best_balanced_accuracy", "test.balanced_accuracy"),
     ]:
         winner = best_model_line(reports, key)
         if winner:

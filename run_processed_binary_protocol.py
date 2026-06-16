@@ -246,19 +246,8 @@ def print_protocol_summary_report(output_dir, folds):
         if not split_data:
             return None
         if isinstance(split_data, dict) and "binary_i63" in split_data:
-            metrics = dict(split_data["binary_i63"])
-        else:
-            metrics = dict(split_data)
-        
-        # Ensure balanced accuracy is present
-        if "balanced_accuracy" not in metrics and "sensitivity" in metrics and "specificity" in metrics:
-            sens = metrics.get("sensitivity")
-            spec = metrics.get("specificity")
-            if sens is not None and spec is not None and not np.isnan(sens) and not np.isnan(spec):
-                metrics["balanced_accuracy"] = float((sens + spec) / 2.0)
-            else:
-                metrics["balanced_accuracy"] = float("nan")
-        return metrics
+            return dict(split_data["binary_i63"])
+        return dict(split_data)
 
     def get_fold_stats(parent_folder, split_key):
         accuracy_list = []
@@ -266,7 +255,8 @@ def print_protocol_summary_report(output_dir, folds):
         auc_list = []
         sens_list = []
         spec_list = []
-        bal_acc_list = []
+        brier_list = []
+        ece_list = []
         
         for fold in range(folds):
             path = output_dir / parent_folder / f"fold_{fold}" / "metrics.json"
@@ -284,8 +274,10 @@ def print_protocol_summary_report(output_dir, folds):
                         sens_list.append(metrics.get("sensitivity"))
                     if metrics.get("specificity") is not None:
                         spec_list.append(metrics.get("specificity"))
-                    if metrics.get("balanced_accuracy") is not None:
-                        bal_acc_list.append(metrics.get("balanced_accuracy"))
+                    if metrics.get("brier_score") is not None:
+                        brier_list.append(metrics.get("brier_score"))
+                    if metrics.get("ece") is not None:
+                        ece_list.append(metrics.get("ece"))
         
         def mean_std(lst):
             vals = [v for v in lst if v is not None and not np.isnan(v)]
@@ -299,7 +291,8 @@ def print_protocol_summary_report(output_dir, folds):
             "auc": mean_std(auc_list),
             "sensitivity": mean_std(sens_list),
             "specificity": mean_std(spec_list),
-            "balanced_accuracy": mean_std(bal_acc_list),
+            "brier_score": mean_std(brier_list),
+            "ece": mean_std(ece_list),
         }
 
     # Load Model 2
@@ -332,11 +325,15 @@ def print_protocol_summary_report(output_dir, folds):
         ("AUC", "auc"),
         ("Sensitivity", "sensitivity"),
         ("Specificity", "specificity"),
-        ("Balanced Accuracy", "balanced_accuracy"),
+        ("Brier Score", "brier_score"),
+        ("ECE", "ece"),
     ]:
         val = model1_stats.get(key)
         if val and val[0] is not None:
-            print(f"- {metric_name:<19}: {val[0]*100:>6.2f}% ± {val[1]*100:.2f}%")
+            if key in ("brier_score", "ece"):
+                print(f"- {metric_name:<19}: {val[0]:>6.4f} ± {val[1]:.4f}")
+            else:
+                print(f"- {metric_name:<19}: {val[0]*100:>6.2f}% ± {val[1]*100:.2f}%")
         else:
             print(f"- {metric_name:<19}: N/A")
 
@@ -351,11 +348,15 @@ def print_protocol_summary_report(output_dir, folds):
             ("AUC", "auc"),
             ("Sensitivity", "sensitivity"),
             ("Specificity", "specificity"),
-            ("Balanced Accuracy", "balanced_accuracy"),
+            ("Brier Score", "brier_score"),
+            ("ECE", "ece"),
         ]:
             val = model2_test.get(key)
             if val is not None and not np.isnan(val):
-                print(f"- {metric_name:<19}: {val*100:>6.2f}%")
+                if key in ("brier_score", "ece"):
+                    print(f"- {metric_name:<19}: {val:>6.4f}")
+                else:
+                    print(f"- {metric_name:<19}: {val*100:>6.2f}%")
             else:
                 print(f"- {metric_name:<19}: N/A")
     else:
@@ -372,11 +373,15 @@ def print_protocol_summary_report(output_dir, folds):
             ("AUC", "auc"),
             ("Sensitivity", "sensitivity"),
             ("Specificity", "specificity"),
-            ("Balanced Accuracy", "balanced_accuracy"),
+            ("Brier Score", "brier_score"),
+            ("ECE", "ece"),
         ]:
             val = model2_cross.get(key)
             if val is not None and not np.isnan(val):
-                print(f"- {metric_name:<19}: {val*100:>6.2f}%")
+                if key in ("brier_score", "ece"):
+                    print(f"- {metric_name:<19}: {val:>6.4f}")
+                else:
+                    print(f"- {metric_name:<19}: {val*100:>6.2f}%")
             else:
                 print(f"- {metric_name:<19}: N/A")
     else:
@@ -390,11 +395,15 @@ def print_protocol_summary_report(output_dir, folds):
         ("AUC", "auc"),
         ("Sensitivity", "sensitivity"),
         ("Specificity", "specificity"),
-        ("Balanced Accuracy", "balanced_accuracy"),
+        ("Brier Score", "brier_score"),
+        ("ECE", "ece"),
     ]:
         val = model1_cross_val.get(key)
         if val and val[0] is not None:
-            print(f"  - {metric_name:<17}: {val[0]*100:>6.2f}% ± {val[1]*100:.2f}%")
+            if key in ("brier_score", "ece"):
+                print(f"  - {metric_name:<17}: {val[0]:>6.4f} ± {val[1]:.4f}")
+            else:
+                print(f"  - {metric_name:<17}: {val[0]*100:>6.2f}% ± {val[1]*100:.2f}%")
         else:
             print(f"  - {metric_name:<17}: N/A")
 
@@ -405,11 +414,15 @@ def print_protocol_summary_report(output_dir, folds):
         ("AUC", "auc"),
         ("Sensitivity", "sensitivity"),
         ("Specificity", "specificity"),
-        ("Balanced Accuracy", "balanced_accuracy"),
+        ("Brier Score", "brier_score"),
+        ("ECE", "ece"),
     ]:
         val = model1_cross_test.get(key)
         if val and val[0] is not None:
-            print(f"  - {metric_name:<17}: {val[0]*100:>6.2f}% ± {val[1]*100:.2f}%")
+            if key in ("brier_score", "ece"):
+                print(f"  - {metric_name:<17}: {val[0]:>6.4f} ± {val[1]:.4f}")
+            else:
+                print(f"  - {metric_name:<17}: {val[0]*100:>6.2f}% ± {val[1]*100:.2f}%")
         else:
             print(f"  - {metric_name:<17}: N/A")
 
@@ -423,11 +436,15 @@ def print_protocol_summary_report(output_dir, folds):
         ("AUC", "auc"),
         ("Sensitivity", "sensitivity"),
         ("Specificity", "specificity"),
-        ("Balanced Accuracy", "balanced_accuracy"),
+        ("Brier Score", "brier_score"),
+        ("ECE", "ece"),
     ]:
         val = model3_stats.get(key)
         if val and val[0] is not None:
-            print(f"- {metric_name:<19}: {val[0]*100:>6.2f}% ± {val[1]*100:.2f}%")
+            if key in ("brier_score", "ece"):
+                print(f"- {metric_name:<19}: {val[0]:>6.4f} ± {val[1]:.4f}")
+            else:
+                print(f"- {metric_name:<19}: {val[0]*100:>6.2f}% ± {val[1]*100:.2f}%")
         else:
             print(f"- {metric_name:<19}: N/A")
 
@@ -438,11 +455,15 @@ def print_protocol_summary_report(output_dir, folds):
         ("AUC", "auc"),
         ("Sensitivity", "sensitivity"),
         ("Specificity", "specificity"),
-        ("Balanced Accuracy", "balanced_accuracy"),
+        ("Brier Score", "brier_score"),
+        ("ECE", "ece"),
     ]:
         val = model3_cross_val.get(key)
         if val and val[0] is not None:
-            print(f"- {metric_name:<19}: {val[0]*100:>6.2f}% ± {val[1]*100:.2f}%")
+            if key in ("brier_score", "ece"):
+                print(f"- {metric_name:<19}: {val[0]:>6.4f} ± {val[1]:.4f}")
+            else:
+                print(f"- {metric_name:<19}: {val[0]*100:>6.2f}% ± {val[1]*100:.2f}%")
         else:
             print(f"- {metric_name:<19}: N/A")
 
@@ -453,11 +474,15 @@ def print_protocol_summary_report(output_dir, folds):
         ("AUC", "auc"),
         ("Sensitivity", "sensitivity"),
         ("Specificity", "specificity"),
-        ("Balanced Accuracy", "balanced_accuracy"),
+        ("Brier Score", "brier_score"),
+        ("ECE", "ece"),
     ]:
         val = model3_cross_test.get(key)
         if val and val[0] is not None:
-            print(f"- {metric_name:<19}: {val[0]*100:>6.2f}% ± {val[1]*100:.2f}%")
+            if key in ("brier_score", "ece"):
+                print(f"- {metric_name:<19}: {val[0]:>6.4f} ± {val[1]:.4f}")
+            else:
+                print(f"- {metric_name:<19}: {val[0]*100:>6.2f}% ± {val[1]*100:.2f}%")
         else:
             print(f"- {metric_name:<19}: N/A")
 

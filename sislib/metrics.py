@@ -16,6 +16,28 @@ def _safe_auc(labels, probs, num_classes):
         return float("nan")
 
 
+def _expected_calibration_error(labels, probs, num_bins=10):
+    labels = np.asarray(labels)
+    probs = np.asarray(probs)
+    if len(labels) == 0:
+        return 0.0
+    bin_boundaries = np.linspace(0, 1, num_bins + 1)
+    ece = 0.0
+    for i in range(num_bins):
+        bin_lower = bin_boundaries[i]
+        bin_upper = bin_boundaries[i + 1]
+        if i == num_bins - 1:
+            in_bin = (probs >= bin_lower) & (probs <= bin_upper)
+        else:
+            in_bin = (probs >= bin_lower) & (probs < bin_upper)
+        prop_in_bin = np.mean(in_bin)
+        if prop_in_bin > 0:
+            accuracy_in_bin = np.mean(labels[in_bin])
+            avg_confidence_in_bin = np.mean(probs[in_bin])
+            ece += prop_in_bin * np.abs(avg_confidence_in_bin - accuracy_in_bin)
+    return float(ece)
+
+
 def _binary_one_vs_rest_metrics(labels, probs, positive_index, positive_label, threshold=0.5):
     true_binary = (labels == positive_index).astype(np.int64)
     if probs.ndim == 2:
@@ -26,6 +48,8 @@ def _binary_one_vs_rest_metrics(labels, probs, positive_index, positive_label, t
     tn, fp, fn, tp = confusion_matrix(true_binary, pred_binary, labels=[0, 1]).ravel()
     sensitivity = float(tp / (tp + fn)) if (tp + fn) else float("nan")
     specificity = float(tn / (tn + fp)) if (tn + fp) else float("nan")
+    brier = float(np.mean((positive_probs - true_binary) ** 2))
+    ece = _expected_calibration_error(true_binary, positive_probs)
     return {
         "positive_label": positive_label,
         "negative_label": f"NOT_{positive_label}",
@@ -36,7 +60,8 @@ def _binary_one_vs_rest_metrics(labels, probs, positive_index, positive_label, t
         "auc": _safe_auc(true_binary, positive_probs, 2),
         "sensitivity": sensitivity,
         "specificity": specificity,
-        "balanced_accuracy": float((sensitivity + specificity) / 2.0),
+        "brier_score": brier,
+        "ece": ece,
         "confusion_matrix": [[int(tn), int(fp)], [int(fn), int(tp)]],
         "num_positive": int(true_binary.sum()),
         "num_negative": int((true_binary == 0).sum()),
@@ -79,10 +104,20 @@ def cls_metrics(
     if num_classes == 2:
         tn, fp = cm[0]
         fn, tp = cm[1]
+        sens = float(tp / (tp + fn)) if (tp + fn) else float("nan")
+        spec = float(tn / (tn + fp)) if (tn + fp) else float("nan")
+        if probs.ndim == 2:
+            pos_probs = probs[:, 1]
+        else:
+            pos_probs = probs
+        brier = float(np.mean((pos_probs - labels) ** 2))
+        ece_val = _expected_calibration_error(labels, pos_probs)
         metrics.update(
             {
-                "sensitivity": float(tp / (tp + fn)) if (tp + fn) else float("nan"),
-                "specificity": float(tn / (tn + fp)) if (tn + fp) else float("nan"),
+                "sensitivity": sens,
+                "specificity": spec,
+                "brier_score": brier,
+                "ece": ece_val,
             }
         )
     if binary_positive_label and binary_positive_label in label_names:
