@@ -150,8 +150,8 @@ def process_pipeline():
     try:
         # Load Group 1: 700_co.xlsx and 700_khong.xlsx
         print("Reading Group 1 (700_co.xlsx, 700_khong.xlsx)...")
-        df_700_co = pd.read_excel(os.path.join(base_dir, "700_co.xlsx"))
-        df_700_khong = pd.read_excel(os.path.join(base_dir, "700_khong.xlsx"))
+        df_700_co = pd.read_excel(os.path.join(base_dir, "data", "700_co.xlsx"))
+        df_700_khong = pd.read_excel(os.path.join(base_dir, "data", "700_khong.xlsx"))
         
         print("Preprocessing Group 1...")
         proc_700_co = preprocess_dataframe(df_700_co)
@@ -171,8 +171,8 @@ def process_pipeline():
     try:
         # Load Group 2: 9937_co.xlsx and 9937_khong.xlsx
         print("\nReading Group 2 (9937_co.xlsx, 9937_khong.xlsx)...")
-        df_9937_co = pd.read_excel(os.path.join(base_dir, "9937_co.xlsx"))
-        df_9937_khong = pd.read_excel(os.path.join(base_dir, "9937_khong.xlsx"))
+        df_9937_co = pd.read_excel(os.path.join(base_dir, "data", "9937_co.xlsx"))
+        df_9937_khong = pd.read_excel(os.path.join(base_dir, "data", "9937_khong.xlsx"))
         
         print("Preprocessing Group 2...")
         proc_9937_co = preprocess_dataframe(df_9937_co)
