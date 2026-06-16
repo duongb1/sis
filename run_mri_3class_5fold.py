@@ -6,14 +6,14 @@ import sys
 from pathlib import Path
 
 
-DEFAULT_KAGGLE_MRI_ROOT = "/kaggle/input/datasets/duongbui/siscth/mri"
+DEFAULT_KAGGLE_MRI_ROOT = "images"
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Run 5-fold MRI 3-class training.")
-    parser.add_argument("--folds-csv", default=f"{DEFAULT_KAGGLE_MRI_ROOT}/mri_3class_folds.csv")
-    parser.add_argument("--image-root", default=f"{DEFAULT_KAGGLE_MRI_ROOT}/images")
-    parser.add_argument("--output-dir", default="/kaggle/working/mri_3class_5fold")
+    parser = argparse.ArgumentParser(description="Run 5-fold MRI binary training.")
+    parser.add_argument("--folds-csv", default="")
+    parser.add_argument("--image-root", default="images")
+    parser.add_argument("--output-dir", default="mri_binary_5fold")
     parser.add_argument("--folds", type=int, default=5)
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch", type=int, default=4)
@@ -103,14 +103,13 @@ def write_summary(output_dir, folds):
         rows.append(
             {
                 "fold": fold,
-                "test_accuracy": test["accuracy"],
-                "test_balanced_accuracy": test["balanced_accuracy"],
-                "test_macro_f1": test["macro_f1"],
-                "test_weighted_f1": test["weighted_f1"],
-                "binary_i63_auc": test["binary_i63"]["auc"],
-                "binary_i63_macro_f1": test["binary_i63"]["macro_f1"],
-                "binary_i63_sensitivity": test["binary_i63"]["i63_recall_sensitivity"],
-                "binary_i63_specificity": test["binary_i63"]["non_i63_recall_specificity"],
+                "test_accuracy": test.get("accuracy"),
+                "test_f1": test.get("f1"),
+                "test_auc": test.get("auc"),
+                "test_sensitivity": test.get("sensitivity"),
+                "test_specificity": test.get("specificity"),
+                "test_brier_score": test.get("brier_score"),
+                "test_ece": test.get("ece"),
             }
         )
     if not rows:

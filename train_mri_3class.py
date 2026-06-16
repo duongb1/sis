@@ -22,18 +22,66 @@ from torch import nn
 from torch.utils.data import DataLoader, Dataset
 from torchvision import models, transforms
 
-from sislib.data.labels import EXCEL_MULTICLASS_LABELS
+LABELS = ["khong", "co"]
 
 
-DEFAULT_KAGGLE_MRI_ROOT = "/kaggle/input/datasets/duongbui/siscth/mri"
+def discover_mri_cases(image_root):
+    root = Path(image_root)
+    cases = []
+    for class_name, label_val in [("co", 1), ("khong", 0)]:
+        class_dir = root / class_name
+        if class_dir.is_dir():
+            for case_dir in class_dir.iterdir():
+                if case_dir.is_dir():
+                    if (case_dir / "ADC").is_dir() and (case_dir / "DWI").is_dir():
+                        cases.append({
+                            "case_id": case_dir.name,
+                            "label": label_val,
+                            "label_name": class_name,
+                            "image_dir": str(case_dir),
+                            "MABN": case_dir.name,
+                        })
+    return cases
+
+
+def make_stratified_folds(cases, n_folds=5, seed=42):
+    rng = random.Random(seed)
+    pos_cases = [c for c in cases if c["label"] == 1]
+    neg_cases = [c for c in cases if c["label"] == 0]
+    rng.shuffle(pos_cases)
+    rng.shuffle(neg_cases)
+    
+    folds = [[] for _ in range(n_folds)]
+    for i, c in enumerate(pos_cases):
+        folds[i % n_folds].append(c)
+    for i, c in enumerate(neg_cases):
+        folds[i % n_folds].append(c)
+        
+    assigned_cases = []
+    for f_idx, fold_list in enumerate(folds):
+        for c in fold_list:
+            c_copy = dict(c)
+            c_copy["fold"] = f_idx
+            assigned_cases.append(c_copy)
+    return assigned_cases
+
+
+def get_splits_for_fold(cases, fold_index, n_folds=5):
+    test_rows = [c for c in cases if c["fold"] == fold_index]
+    val_rows = [c for c in cases if c["fold"] == (fold_index + 1) % n_folds]
+    train_rows = [c for c in cases if c["fold"] not in (fold_index, (fold_index + 1) % n_folds)]
+    return train_rows, val_rows, test_rows
+
+
+DEFAULT_KAGGLE_MRI_ROOT = "images"
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Train a 3-class MRI case-level classifier.")
-    parser.add_argument("--folds-csv", default=f"{DEFAULT_KAGGLE_MRI_ROOT}/mri_3class_folds.csv")
-    parser.add_argument("--image-root", default=f"{DEFAULT_KAGGLE_MRI_ROOT}/images")
+    parser = argparse.ArgumentParser(description="Train a binary MRI case-level classifier.")
+    parser.add_argument("--folds-csv", default="")
+    parser.add_argument("--image-root", default="images")
     parser.add_argument("--fold-index", type=int, default=0)
-    parser.add_argument("--out", default="/kaggle/working/mri_3class/fold_0")
+    parser.add_argument("--out", default="mri_binary/fold_0")
     parser.add_argument("--pretrained", action="store_true", help="Use torchvision ImageNet weights if available.")
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch", type=int, default=4)
@@ -58,12 +106,6 @@ def seed_everything(seed):
         torch.cuda.manual_seed_all(seed)
 
 
-def read_rows(path, fold_index, split):
-    with Path(path).open("r", newline="", encoding="utf-8") as handle:
-        reader = csv.DictReader(handle)
-        return [row for row in reader if int(row["fold"]) == fold_index and row["split"] == split]
-
-
 def case_image_pairs(image_dir):
     root = Path(image_dir)
     adc_paths = sorted((root / "ADC").glob("*.JPG")) if (root / "ADC").is_dir() else []
@@ -73,14 +115,12 @@ def case_image_pairs(image_dir):
 
 
 def resolve_image_dir(row, image_root):
-    root = Path(image_root)
-    case_dir = root / str(row["case_id"])
-    if case_dir.is_dir():
-        return case_dir
     if row.get("image_dir"):
-        fallback = Path(row["image_dir"])
-        if fallback.is_dir():
-            return fallback
+        p = Path(row["image_dir"])
+        if p.is_dir():
+            return p
+    label_name = row.get("label_name", "co" if row.get("label") == 1 else "khong")
+    case_dir = Path(image_root) / label_name / str(row["case_id"])
     return case_dir
 
 
@@ -140,9 +180,9 @@ class MRICaseDataset(Dataset):
             images.append(self._load_pair(adc_path, dwi_path))
         return {
             "images": torch.stack(images),
-            "label": int(row["label_3class_id"]),
+            "label": int(row["label"]),
             "case_id": row["case_id"],
-            "mabn": row["MABN"],
+            "mabn": row.get("MABN", row["case_id"]),
             "image_count": len(pairs),
         }
 
@@ -162,7 +202,7 @@ def collate_cases(batch):
 
 
 class CaseMeanPoolCNN(nn.Module):
-    def __init__(self, num_classes=3, pretrained=False):
+    def __init__(self, num_classes=2, pretrained=False):
         super().__init__()
         weights = models.ResNet50_Weights.DEFAULT if pretrained else None
         backbone = models.resnet50(weights=weights)
@@ -201,11 +241,12 @@ class CaseMeanPoolDP(nn.Module):
 
 
 def class_weights(rows):
-    counts = Counter(int(row["label_3class_id"]) for row in rows)
+    counts = Counter(int(row["label"]) for row in rows)
     total = sum(counts.values())
     weights = []
-    for class_id in range(len(EXCEL_MULTICLASS_LABELS)):
-        weights.append(total / (len(EXCEL_MULTICLASS_LABELS) * counts[class_id]))
+    for class_id in range(2):
+        count = counts.get(class_id, 0)
+        weights.append(total / (2 * count) if count > 0 else 1.0)
     return torch.tensor(weights, dtype=torch.float32)
 
 
@@ -263,9 +304,9 @@ def evaluate(model, loader, criterion, device, precision):
             "case_id": case_id,
             "MABN": mabn,
             "image_count": image_count,
-            "true_label": EXCEL_MULTICLASS_LABELS[true],
-            "pred_label": EXCEL_MULTICLASS_LABELS[pred],
-            **{f"prob_{label}": prob[index] for index, label in enumerate(EXCEL_MULTICLASS_LABELS)},
+            "true_label": LABELS[true],
+            "pred_label": LABELS[pred],
+            **{f"prob_{label}": prob[index] for index, label in enumerate(LABELS)},
         }
         for case_id, mabn, image_count, true, pred, prob in zip(case_ids, mabns, image_counts, y_true, y_pred, y_prob)
     ]
@@ -273,44 +314,15 @@ def evaluate(model, loader, criterion, device, precision):
 
 
 def compute_metrics(y_true, y_pred, y_prob):
-    labels = list(range(len(EXCEL_MULTICLASS_LABELS)))
-    precision, recall, f1, support = precision_recall_fscore_support(
-        y_true, y_pred, labels=labels, zero_division=0
+    from sislib.metrics import cls_metrics
+    return cls_metrics(
+        y_true,
+        np.array(y_prob),
+        y_pred,
+        threshold=0.5,
+        label_names=LABELS,
+        binary_positive_label="co",
     )
-    metrics = {
-        "accuracy": accuracy_score(y_true, y_pred),
-        "balanced_accuracy": balanced_accuracy_score(y_true, y_pred),
-        "macro_f1": f1_score(y_true, y_pred, average="macro"),
-        "weighted_f1": f1_score(y_true, y_pred, average="weighted"),
-        "confusion_matrix": confusion_matrix(y_true, y_pred, labels=labels).tolist(),
-        "per_class": {
-            EXCEL_MULTICLASS_LABELS[index]: {
-                "precision": float(precision[index]),
-                "recall": float(recall[index]),
-                "f1": float(f1[index]),
-                "support": int(support[index]),
-            }
-            for index in labels
-        },
-        "classification_report": classification_report(
-            y_true, y_pred, labels=labels, target_names=EXCEL_MULTICLASS_LABELS, zero_division=0, output_dict=True
-        ),
-    }
-    binary_true = [1 if item == 0 else 0 for item in y_true]
-    binary_pred = [1 if item == 0 else 0 for item in y_pred]
-    binary_prob = [item[0] for item in y_prob]
-    metrics["binary_i63"] = {
-        "accuracy": accuracy_score(binary_true, binary_pred),
-        "balanced_accuracy": balanced_accuracy_score(binary_true, binary_pred),
-        "macro_f1": f1_score(binary_true, binary_pred, average="macro"),
-        "i63_recall_sensitivity": precision_recall_fscore_support(binary_true, binary_pred, labels=[1], zero_division=0)[1][0],
-        "non_i63_recall_specificity": precision_recall_fscore_support(binary_true, binary_pred, labels=[0], zero_division=0)[1][0],
-    }
-    if len(set(binary_true)) == 2:
-        metrics["binary_i63"]["auc"] = roc_auc_score(binary_true, binary_prob)
-    else:
-        metrics["binary_i63"]["auc"] = math.nan
-    return metrics
 
 
 def write_predictions(path, rows):
@@ -327,9 +339,15 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() and not args.cpu else "cpu")
 
-    train_rows = read_rows(args.folds_csv, args.fold_index, "train")
-    val_rows = read_rows(args.folds_csv, args.fold_index, "val")
-    test_rows = read_rows(args.folds_csv, args.fold_index, "test")
+    cases = discover_mri_cases(args.image_root)
+    if not cases:
+        raise ValueError(f"No MRI cases discovered under {args.image_root}")
+    cases_with_folds = make_stratified_folds(cases, n_folds=5, seed=args.seed)
+    train_rows, val_rows, test_rows = get_splits_for_fold(cases_with_folds, args.fold_index, n_folds=5)
+
+    print(f"Discovered {len(cases)} MRI cases total in {args.image_root}")
+    print(f"Fold {args.fold_index} split sizes: Train={len(train_rows)}, Val={len(val_rows)}, Test={len(test_rows)}")
+
     datasets = {
         "train": MRICaseDataset(train_rows, args.image_root, args.image_size, args.max_images_per_case, train=True, seed=args.seed),
         "val": MRICaseDataset(val_rows, args.image_root, args.image_size, args.max_images_per_case, train=False, seed=args.seed),
@@ -346,7 +364,7 @@ def main():
         for split, dataset in datasets.items()
     }
 
-    model = CaseMeanPoolCNN(num_classes=len(EXCEL_MULTICLASS_LABELS), pretrained=args.pretrained).to(device)
+    model = CaseMeanPoolCNN(num_classes=2, pretrained=args.pretrained).to(device)
     cuda_devices = torch.cuda.device_count() if device.type == "cuda" else 0
     if cuda_devices > 1 and not args.no_dp:
         model = CaseMeanPoolDP(model)
@@ -366,15 +384,15 @@ def main():
         history.append(entry)
         print(
             f"epoch={epoch} train_loss={train_loss:.4f} "
-            f"val_macro_f1={val_metrics['macro_f1']:.4f} val_bal_acc={val_metrics['balanced_accuracy']:.4f}"
+            f"val_f1={val_metrics['f1']:.4f} val_accuracy={val_metrics['accuracy']:.4f}"
         )
-        if val_metrics["macro_f1"] > best_val:
-            best_val = val_metrics["macro_f1"]
-            torch.save({"model": model.state_dict(), "args": vars(args), "labels": EXCEL_MULTICLASS_LABELS}, best_path)
+        if val_metrics["f1"] > best_val:
+            best_val = val_metrics["f1"]
+            torch.save({"model": model.state_dict(), "args": vars(args), "labels": LABELS}, best_path)
 
     checkpoint = torch.load(best_path, map_location=device)
     model.load_state_dict(checkpoint["model"])
-    final = {"fold": args.fold_index, "device": str(device), "labels": EXCEL_MULTICLASS_LABELS, "history": history}
+    final = {"fold": args.fold_index, "device": str(device), "labels": LABELS, "history": history}
     for split in ["train", "val", "test"]:
         metrics, predictions = evaluate(model, loaders[split], criterion, device, args.precision)
         final[split] = metrics
