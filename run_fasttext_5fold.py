@@ -8,8 +8,7 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import accuracy_score, balanced_accuracy_score, confusion_matrix, f1_score, roc_auc_score
 
-from sislib.data.labels import EXCEL_TEXT_COLUMNS
-from sislib.data.splits import assign_kfold_splits
+from utils.text_data import EXCEL_TEXT_COLUMNS, assign_kfold_splits
 
 def label_from_filename(name: str) -> str:
     return "co" if "co" in name.lower() else "khong"

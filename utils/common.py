@@ -2,12 +2,12 @@ import random
 import os
 import logging
 import warnings
+import subprocess
 from pathlib import Path
 
 import numpy as np
 import torch
 import torch.nn as nn
-
 
 LABEL_TO_ID = {"khong": 0, "co": 1}
 ID_TO_LABEL = {0: "khong", 1: "co"}
@@ -169,3 +169,25 @@ def batch_to_device(batch, device, id_key):
     ids = batch.pop(id_key)
     inputs = {k: v.to(device, non_blocking=True) for k, v in batch.items()}
     return inputs, ids
+
+
+def build_python_env(root):
+    env = os.environ.copy()
+    root = Path(root)
+    pythonpath = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = str(root) if not pythonpath else os.pathsep.join([str(root), pythonpath])
+    return env
+
+
+def run_stage(name, cmd, done_path, force=False, dry_run=False, cwd=None):
+    cwd = Path(cwd or Path.cwd())
+    done_path = Path(done_path)
+    print("\n" + "=" * 80)
+    print(name)
+    print(" ".join(str(item) for item in cmd), flush=True)
+    if done_path.exists() and not force:
+        print(f"Skip: found {done_path}")
+        return
+    if dry_run:
+        return
+    subprocess.run([str(item) for item in cmd], check=True, cwd=cwd, env=build_python_env(cwd))

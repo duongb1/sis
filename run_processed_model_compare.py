@@ -191,7 +191,7 @@ def main():
             
             # Aggregate folds
             if not args.dry_run:
-                from sislib.reports import aggregate_experiment
+                from utils.metrics import aggregate_experiment
                 aggregate_experiment(output_dir, folder_name, args.folds)
         else:
             out = output_dir / folder_name

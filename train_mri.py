@@ -226,7 +226,7 @@ class CaseMeanPoolCNN(nn.Module):
 class CaseMeanPoolDP(nn.Module):
     def __init__(self, base_model):
         super().__init__()
-        from sislib.common import AutocastDPWrapper
+        from utils.common import AutocastDPWrapper
         self.backbone = nn.DataParallel(AutocastDPWrapper(base_model.backbone))
         self.classifier = base_model.classifier
 
@@ -315,7 +315,7 @@ def evaluate(model, loader, criterion, device, precision):
 
 
 def compute_metrics(y_true, y_pred, y_prob):
-    from sislib.metrics import cls_metrics
+    from utils.metrics import cls_metrics
     return cls_metrics(
         y_true,
         np.array(y_prob),

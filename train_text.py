@@ -8,15 +8,15 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-from sislib.common import quiet_hf_logging
+from utils.common import quiet_hf_logging
 
 quiet_hf_logging()
 
 from transformers import AutoModelForSequenceClassification, AutoTokenizer, get_linear_schedule_with_warmup
 
-from sislib.common import get_device, resolve_max_len, round_float, round_metrics, seed_all, split_records, to_device, unwrap
-from sislib.metrics import cls_metrics, format_metrics_summary, save_preds
-from sislib.text_data import (
+from utils.common import get_device, resolve_max_len, round_float, round_metrics, seed_all, split_records, to_device, unwrap
+from utils.metrics import cls_metrics, format_metrics_summary, save_preds
+from utils.text_data import (
     TextDataset,
     collect_excel_text,
     collect_large_text,
@@ -30,7 +30,7 @@ from sislib.text_data import (
     parse_labels_arg,
     save_records,
 )
-from sislib.text_train import PhoBERTClassifier, ce_epoch, eval_text
+from utils.text_train import PhoBERTClassifier, ce_epoch, eval_text
 
 
 def parse_args():

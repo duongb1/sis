@@ -4,8 +4,8 @@ import json
 import numpy as np
 from pathlib import Path
 
-from sislib.reports import aggregate_experiment
-from sislib.runner_utils import run_stage
+from utils.metrics import aggregate_experiment
+from utils.common import run_stage
 
 
 ROOT = Path(__file__).resolve().parent
