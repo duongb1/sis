@@ -11,10 +11,14 @@ from utils.common import run_stage
 ROOT = Path(__file__).resolve().parent
 
 
+DEFAULT_SMALL_CSV = "/kaggle/input/datasets/duongbui/siscth/small.csv" if Path("/kaggle/input/datasets/duongbui/siscth/small.csv").exists() else "data/small.csv"
+DEFAULT_LARGE_CSV = "/kaggle/input/datasets/duongbui/siscth/large.csv" if Path("/kaggle/input/datasets/duongbui/siscth/large.csv").exists() else "data/large.csv"
+
+
 def parse_args():
-    p = argparse.ArgumentParser(description="Run binary SIS protocol on processed_700.csv and processed_9937.csv.")
-    p.add_argument("--small-csv", default="processed_700.csv")
-    p.add_argument("--large-csv", default="processed_9937.csv")
+    p = argparse.ArgumentParser(description="Run binary SIS protocol directly on raw small.csv and large.csv.")
+    p.add_argument("--small-csv", default=DEFAULT_SMALL_CSV)
+    p.add_argument("--large-csv", default=DEFAULT_LARGE_CSV)
     p.add_argument("--output-dir", default="processed_binary_protocol_outputs")
     p.add_argument("--model", default="vinai/phobert-base")
     p.add_argument("--epochs", type=int, default=8)
@@ -51,7 +55,7 @@ def common_train_args(args, data, out, pooling):
         "--model",
         args.model,
         "--format",
-        "processed",
+        "csv",
         "--excel-task",
         "binary",
         "--labels",
@@ -103,7 +107,7 @@ def large_cmd(args, out, pooling):
             "--eval-data",
             f"processed_700_all={args.small_csv}",
             "--eval-format",
-            "processed",
+            "csv",
             "--eval-split-strategy",
             "eval",
             "--eval-splits",
@@ -126,7 +130,7 @@ def small_fold_cmd(args, fold, out, pooling):
             "--eval-data",
             f"processed_9937_random={args.large_csv}",
             "--eval-format",
-            "processed",
+            "csv",
             "--eval-split-strategy",
             "random",
             "--eval-splits",
@@ -161,7 +165,6 @@ def main():
             print(f"Error: Unsupported pooling method '{p}'. Choose from cls, attention, gated.", file=sys.stderr)
             sys.exit(1)
 
-    # Check if processed CSVs exist; if not, run preprocess.py automatically
     small_csv_path = Path(args.small_csv)
     if not small_csv_path.exists():
         small_csv_path = ROOT / args.small_csv
@@ -170,24 +173,9 @@ def main():
     if not large_csv_path.exists():
         large_csv_path = ROOT / args.large_csv
 
-    if not args.dry_run and (not small_csv_path.exists() or not large_csv_path.exists()):
-        # If the user is using the default filenames, try to generate them using preprocess.py
-        if args.small_csv == "processed_700.csv" or args.large_csv == "processed_9937.csv":
-            preprocess_script = ROOT / "preprocess.py"
-            if preprocess_script.exists():
-                print("Preprocessed CSV files not found. Running preprocess.py...")
-                import subprocess
-                subprocess.run([sys.executable, str(preprocess_script)], check=True, cwd=ROOT)
-                # Re-check paths after preprocessing
-                if not (ROOT / args.small_csv).exists() or not (ROOT / args.large_csv).exists():
-                    print("Error: Preprocessing completed but CSV files are still missing.", file=sys.stderr)
-                    sys.exit(1)
-            else:
-                print(f"Error: Preprocessed CSV files not found and {preprocess_script} is missing.", file=sys.stderr)
-                sys.exit(1)
-        else:
-            print(f"Error: The specified CSV files do not exist:\n  - Small: {args.small_csv}\n  - Large: {args.large_csv}", file=sys.stderr)
-            sys.exit(1)
+    if not small_csv_path.exists() or not large_csv_path.exists():
+        print(f"Error: The specified CSV files do not exist:\n  - Small: {args.small_csv}\n  - Large: {args.large_csv}", file=sys.stderr)
+        sys.exit(1)
 
     print("Protocol:")
     print("model_1 processed_700: 5-fold, train/val/test = 7/1/2, report mean +/- std.")

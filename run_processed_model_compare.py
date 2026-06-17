@@ -11,11 +11,15 @@ ROOT = Path(__file__).resolve().parent
 VARIANTS = ["cls", "attention", "gated"]
 
 
+DEFAULT_SMALL_CSV = "/kaggle/input/datasets/duongbui/siscth/small.csv" if Path("/kaggle/input/datasets/duongbui/siscth/small.csv").exists() else "data/small.csv"
+DEFAULT_LARGE_CSV = "/kaggle/input/datasets/duongbui/siscth/large.csv" if Path("/kaggle/input/datasets/duongbui/siscth/large.csv").exists() else "data/large.csv"
+
+
 def parse_args():
-    parser = argparse.ArgumentParser(description="Compare PhoBERT binary classification models on processed CSVs.")
+    parser = argparse.ArgumentParser(description="Compare PhoBERT binary classification models directly on raw small.csv and large.csv.")
     parser.add_argument("--scale", choices=["small", "large"], default="small", help="Dataset scale to run.")
-    parser.add_argument("--small-csv", default="processed_700.csv", help="Path to small dataset CSV.")
-    parser.add_argument("--large-csv", default="processed_9937.csv", help="Path to large dataset CSV.")
+    parser.add_argument("--small-csv", default=DEFAULT_SMALL_CSV, help="Path to small dataset CSV.")
+    parser.add_argument("--large-csv", default=DEFAULT_LARGE_CSV, help="Path to large dataset CSV.")
     parser.add_argument("--output-dir", default="processed_compare_outputs", help="Output directory for metrics and checkpoints.")
     parser.add_argument("--model", default="vinai/phobert-base")
     parser.add_argument("--epochs", type=int, default=8)
@@ -128,21 +132,9 @@ def main():
     if not csv_path.exists():
         csv_path = ROOT / csv_name
 
-    if not args.dry_run and not csv_path.exists():
-        if csv_name in ("processed_700.csv", "processed_9937.csv"):
-            preprocess_script = ROOT / "preprocess.py"
-            if preprocess_script.exists():
-                print(f"{csv_name} not found. Running preprocess.py...")
-                subprocess.run([sys.executable, str(preprocess_script)], check=True, cwd=ROOT)
-                if not (ROOT / csv_name).exists():
-                    print(f"Error: Preprocessing finished but {csv_name} is still missing.", file=sys.stderr)
-                    sys.exit(1)
-            else:
-                print(f"Error: {csv_name} not found and {preprocess_script} is missing.", file=sys.stderr)
-                sys.exit(1)
-        else:
-            print(f"Error: {csv_path} does not exist.", file=sys.stderr)
-            sys.exit(1)
+    if not csv_path.exists():
+        print(f"Error: {csv_path} does not exist.", file=sys.stderr)
+        sys.exit(1)
 
     is_kfold = (args.scale == "small")
 
@@ -161,7 +153,7 @@ def main():
                     "--data", str(csv_path),
                     "--out", str(out),
                     "--model", args.model,
-                    "--format", "processed",
+                    "--format", "csv",
                     "--excel-task", "binary",
                     "--labels", "khong,co",
                     "--binary-positive-label", "co",
@@ -204,7 +196,7 @@ def main():
                 "--data", str(csv_path),
                 "--out", str(out),
                 "--model", args.model,
-                "--format", "processed",
+                "--format", "csv",
                 "--excel-task", "binary",
                 "--labels", "khong,co",
                 "--binary-positive-label", "co",
