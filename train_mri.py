@@ -29,67 +29,30 @@ def discover_mri_cases(image_root):
     root = Path(image_root)
     cases = []
     
-    # Check if we have class subdirectories (old binary split structure)
-    has_co = (root / "co").is_dir()
-    has_khong = (root / "khong").is_dir()
-    
-    # Support nested split subdirectories (train/co, val/co, test/co)
-    has_splits = any((root / s).is_dir() for s in ["train", "val", "test"])
-    
-    if has_splits:
-        for split in ["train", "val", "test"]:
-            for class_name, label_val in [("co", 1), ("khong", 0)]:
-                class_dir = root / split / class_name
-                if class_dir.is_dir():
-                    for case_dir in class_dir.iterdir():
-                        if case_dir.is_dir():
-                            if (case_dir / "ADC").is_dir() and (case_dir / "DWI").is_dir():
-                                cases.append({
-                                    "case_id": case_dir.name,
-                                    "label": label_val,
-                                    "label_name": class_name,
-                                    "image_dir": str(case_dir),
-                                    "MABN": case_dir.name,
-                                })
-    elif has_co or has_khong:
-        for class_name, label_val in [("co", 1), ("khong", 0)]:
-            class_dir = root / class_name
-            if class_dir.is_dir():
-                for case_dir in class_dir.iterdir():
-                    if case_dir.is_dir():
-                        if (case_dir / "ADC").is_dir() and (case_dir / "DWI").is_dir():
-                            cases.append({
-                                "case_id": case_dir.name,
-                                "label": label_val,
-                                "label_name": class_name,
-                                "image_dir": str(case_dir),
-                                "MABN": case_dir.name,
-                            })
-    else:
-        # Flat structure: image_root/stt (STT 1-1400)
-        if root.is_dir():
-            for case_dir in root.iterdir():
-                if case_dir.is_dir() and case_dir.name.isdigit():
-                    stt_val = int(case_dir.name)
-                    # 700_co has STT 1-697 after duplicate cleanup
-                    # 700_khong has STT 698-1377 after duplicate cleanup
-                    if 1 <= stt_val <= 697:
-                        class_name = "co"
-                        label_val = 1
-                    elif 698 <= stt_val <= 1377:
-                        class_name = "khong"
-                        label_val = 0
-                    else:
-                        continue
-                    
-                    if (case_dir / "ADC").is_dir() and (case_dir / "DWI").is_dir():
-                        cases.append({
-                            "case_id": case_dir.name,
-                            "label": label_val,
-                            "label_name": class_name,
-                            "image_dir": str(case_dir),
-                            "MABN": case_dir.name,
-                        })
+    # Flat structure: image_root/stt (STT 1-1400)
+    if root.is_dir():
+        for case_dir in root.iterdir():
+            if case_dir.is_dir() and case_dir.name.isdigit():
+                stt_val = int(case_dir.name)
+                # 700_co has STT 1-697 after duplicate cleanup
+                # 700_khong has STT 698-1377 after duplicate cleanup
+                if 1 <= stt_val <= 697:
+                    class_name = "co"
+                    label_val = 1
+                elif 698 <= stt_val <= 1377:
+                    class_name = "khong"
+                    label_val = 0
+                else:
+                    continue
+                
+                if (case_dir / "ADC").is_dir() and (case_dir / "DWI").is_dir():
+                    cases.append({
+                        "case_id": case_dir.name,
+                        "label": label_val,
+                        "label_name": class_name,
+                        "image_dir": str(case_dir),
+                        "MABN": case_dir.name,
+                    })
     return cases
 
 
@@ -169,25 +132,8 @@ def resolve_image_dir(row, image_root):
         p = Path(row["image_dir"])
         if p.is_dir():
             return p
-    label_name = row.get("label_name", "co" if row.get("label") == 1 else "khong")
-    
-    # Try flat directory first
     flat_path = Path(image_root) / str(row["case_id"])
-    if flat_path.is_dir():
-        return flat_path
-        
-    # Try binary directory
-    binary_path = Path(image_root) / label_name / str(row["case_id"])
-    if binary_path.is_dir():
-        return binary_path
-        
-    # Try split directory
-    for split in ["train", "val", "test"]:
-        split_path = Path(image_root) / split / label_name / str(row["case_id"])
-        if split_path.is_dir():
-            return split_path
-            
-    return binary_path
+    return flat_path
 
 
 class MRICaseDataset(Dataset):

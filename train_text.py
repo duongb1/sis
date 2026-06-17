@@ -18,17 +18,8 @@ from utils.common import get_device, resolve_max_len, round_float, round_metrics
 from utils.metrics import cls_metrics, format_metrics_summary, save_preds
 from utils.text_data import (
     TextDataset,
-    collect_excel_text,
-    collect_large_text,
-    collect_processed_csv_text,
-    collect_raw_csv_text,
-    discover_excel_labels,
-    discover_processed_csv_labels,
-    discover_raw_csv_labels,
-    discover_text_labels,
-    is_excel_data,
-    is_processed_csv_data,
-    is_raw_csv_data,
+    collect_csv_text,
+    discover_csv_labels,
     make_label_maps,
     parse_labels_arg,
     save_records,
@@ -37,20 +28,17 @@ from utils.text_train import PhoBERTClassifier, ce_epoch, eval_text
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Train text-only PhoBERT on large text files.")
+    p = argparse.ArgumentParser(description="Train text-only PhoBERT directly on raw small.csv and large.csv.")
     p.add_argument("--data", default="/kaggle/input/datasets/duongbui/siscth/large.csv")
     p.add_argument("--out", default="/kaggle/working/text_phobert_classifier")
     p.add_argument("--model", default="vinai/phobert-base")
-    p.add_argument("--format", choices=["auto", "text", "excel", "processed", "csv"], default="auto", help="Input format. processed accepts CSV files with Input_Text and Label columns. csv accepts raw CSV files with clinical fields.")
-    p.add_argument("--excel-task", choices=["binary"], default="binary", help="For Excel input, train on co/khong binary targets.")
-    p.add_argument("--val-ratio", type=float, default=0.1, help="Validation ratio for unsplit Excel input.")
-    p.add_argument("--test-ratio", type=float, default=0.1, help="Test ratio for unsplit Excel input.")
-    p.add_argument("--split-strategy", choices=["random", "kfold"], default="random", help="Excel split strategy. kfold uses one fold as 20%% test when --n-folds 5.")
-    p.add_argument("--n-folds", type=int, default=5, help="Number of folds for --split-strategy kfold.")
-    p.add_argument("--fold-index", type=int, default=0, help="Zero-based held-out test fold for --split-strategy kfold.")
-    p.add_argument("--excel-split-label", choices=["target", "binary"], default="binary", help="Label source used only to stratify Excel kfold splits.")
-    p.add_argument("--labels", default=None, help="Comma-separated class names. Defaults to CSV/file labels discovered under --data.")
-    p.add_argument("--binary-positive-label", default=None, help="Class treated as positive for one-vs-rest binary metrics. Defaults to co.")
+    p.add_argument("--val-ratio", type=float, default=0.1, help="Validation ratio for split.")
+    p.add_argument("--test-ratio", type=float, default=0.1, help="Test ratio for split.")
+    p.add_argument("--split-strategy", choices=["random", "kfold"], default="random", help="Split strategy.")
+    p.add_argument("--n-folds", type=int, default=5, help="Number of folds.")
+    p.add_argument("--fold-index", type=int, default=0, help="Fold index.")
+    p.add_argument("--labels", default=None, help="Comma-separated class names.")
+    p.add_argument("--binary-positive-label", default=None, help="Class treated as positive. Defaults to co.")
     p.add_argument("--max-len", type=int, default=512)
     p.add_argument("--batch", type=int, default=16)
     p.add_argument("--epochs", type=int, default=8)
@@ -59,18 +47,17 @@ def parse_args():
     p.add_argument("--warmup", type=float, default=0.1)
     p.add_argument("--threshold", type=float, default=0.5)
 
-    p.add_argument("--pooling", choices=["cls", "attention", "gated"], default="cls", help="Pooling method after PhoBERT encoder. cls uses the first-token representation, attention learns token-level attention pooling, and gated fuses CLS with attention pooling.")
+    p.add_argument("--pooling", choices=["cls", "attention", "gated"], default="cls", help="Pooling method after PhoBERT encoder.")
     p.add_argument("--input-mode", choices=["concat"], default="concat", help="Input representation mode: concat all fields.")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--workers", type=int, default=0)
     p.add_argument("--accum", type=int, default=1)
     p.add_argument("--cpu", action="store_true")
     p.add_argument("--no-mgpu", action="store_true")
-    p.add_argument("--init-checkpoint", default=None, help="Optional checkpoint directory to initialize/fine-tune from.")
-    p.add_argument("--eval-data", action="append", default=[], help="Extra evaluation data as NAME=PATH or PATH. Can be repeated.")
-    p.add_argument("--eval-format", choices=["auto", "text", "excel", "processed"], default="auto")
+    p.add_argument("--init-checkpoint", default=None, help="Optional checkpoint directory.")
+    p.add_argument("--eval-data", action="append", default=[], help="Extra evaluation data.")
     p.add_argument("--eval-split-strategy", choices=["eval", "random", "kfold"], default="eval")
-    p.add_argument("--eval-splits", default="eval", help="Comma-separated splits to evaluate for --eval-data, e.g. eval or val,test.")
+    p.add_argument("--eval-splits", default="eval", help="Splits to evaluate.")
     return p.parse_args()
 
 
@@ -81,7 +68,6 @@ def model_config_metadata(args):
     config = {
         "pooling": args.pooling,
         "fusion": fusion,
-        "primary_task": args.excel_task,
     }
     return {key: value for key, value in config.items() if value is not None}
 
@@ -108,7 +94,6 @@ def save_model(model, tokenizer, path, epoch, metrics, args, max_len, labels, la
                 "split_strategy": args.split_strategy,
                 "n_folds": args.n_folds,
                 "fold_index": args.fold_index,
-                "excel_split_label": args.excel_split_label,
                 "val_ratio": args.val_ratio,
                 "test_ratio": args.test_ratio,
                 "model_config": model_config_metadata(args),
@@ -140,7 +125,6 @@ def save_state_dict_model(model, tokenizer, path, epoch, metrics, args, max_len,
                 "split_strategy": args.split_strategy,
                 "n_folds": args.n_folds,
                 "fold_index": args.fold_index,
-                "excel_split_label": args.excel_split_label,
                 "val_ratio": args.val_ratio,
                 "test_ratio": args.test_ratio,
                 "model_config": model_config_metadata(args),
@@ -154,65 +138,21 @@ def label_distribution(rows, key):
     return dict(sorted(counts.items()))
 
 
-def infer_input_format(data, requested):
-    if requested != "auto":
-        return requested
-    if is_excel_data(data):
-        return "excel"
-    if is_processed_csv_data(data):
-        return "processed"
-    if is_raw_csv_data(data):
-        return "csv"
-    return "text"
-
-
-def collect_records_for_args(args, labels, label_to_id, data=None, input_format=None, split_strategy=None, eval_split_name="eval"):
+def collect_records_for_args(args, labels, label_to_id, data=None, split_strategy=None, eval_split_name="eval"):
     data = args.data if data is None else data
-    input_format = infer_input_format(data, args.format if input_format is None else input_format)
     split_strategy = args.split_strategy if split_strategy is None else split_strategy
-    if input_format == "excel":
-        return collect_excel_text(
-            data,
-            labels=labels,
-            label_to_id=label_to_id,
-            task=args.excel_task,
-            seed=args.seed,
-            val_ratio=args.val_ratio,
-            test_ratio=args.test_ratio,
-            split_strategy=split_strategy,
-            n_folds=args.n_folds,
-            fold_index=args.fold_index,
-            split_label=args.excel_split_label,
-        )
-    if input_format == "processed":
-        return collect_processed_csv_text(
-            data,
-            labels=labels,
-            label_to_id=label_to_id,
-            seed=args.seed,
-            val_ratio=args.val_ratio,
-            test_ratio=args.test_ratio,
-            split_strategy=split_strategy,
-            n_folds=args.n_folds,
-            fold_index=args.fold_index,
-            eval_split_name=eval_split_name,
-        )
-    if input_format == "csv":
-        return collect_raw_csv_text(
-            data,
-            labels=labels,
-            label_to_id=label_to_id,
-            seed=args.seed,
-            val_ratio=args.val_ratio,
-            test_ratio=args.test_ratio,
-            split_strategy=split_strategy,
-            n_folds=args.n_folds,
-            fold_index=args.fold_index,
-            eval_split_name=eval_split_name,
-        )
-    if split_strategy not in {"random", "eval"}:
-        raise RuntimeError(f"--split-strategy {split_strategy!r} is not supported for text folder input.")
-    return collect_large_text(data, labels=labels, label_to_id=label_to_id)
+    return collect_csv_text(
+        data,
+        labels=labels,
+        label_to_id=label_to_id,
+        seed=args.seed,
+        val_ratio=args.val_ratio,
+        test_ratio=args.test_ratio,
+        split_strategy=split_strategy,
+        n_folds=args.n_folds,
+        fold_index=args.fold_index,
+        eval_split_name=eval_split_name,
+    )
 
 
 def parse_eval_data_spec(spec):
@@ -238,40 +178,21 @@ def main():
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
 
-    input_format = infer_input_format(args.data, args.format)
-    use_excel = input_format == "excel"
-    use_processed = input_format == "processed"
-    use_csv = input_format == "csv"
-    if use_excel:
-        labels = parse_labels_arg(args.labels) or discover_excel_labels(args.data, task="binary")
-        if args.binary_positive_label is None:
-            args.binary_positive_label = "co"
-    elif use_processed:
-        labels = parse_labels_arg(args.labels) or discover_processed_csv_labels(args.data)
-        if args.binary_positive_label is None:
-            args.binary_positive_label = "co"
-    elif use_csv:
-        labels = parse_labels_arg(args.labels) or discover_raw_csv_labels(args.data)
-        if args.binary_positive_label is None:
-            args.binary_positive_label = "co"
-    else:
-        labels = parse_labels_arg(args.labels) or discover_text_labels(args.data)
-        if args.binary_positive_label is None:
-            args.binary_positive_label = "co"
+    labels = parse_labels_arg(args.labels) or discover_csv_labels(args.data)
+    if args.binary_positive_label is None:
+        args.binary_positive_label = "co"
     if len(labels) < 2:
         raise RuntimeError(f"Need at least two labels under --data, found: {labels}")
     label_to_id, id_to_label = make_label_maps(labels)
 
-    records, skipped, data_root = collect_records_for_args(args, labels, label_to_id, input_format=input_format)
+    records, skipped, data_root = collect_records_for_args(args, labels, label_to_id)
     if skipped:
         (out / "skipped_text_files.txt").write_text("\n".join(skipped), encoding="utf-8")
     train_rows, val_rows, test_rows = [split_records(records, s) for s in ("train", "val", "test")]
     if not train_rows or not val_rows:
         raise RuntimeError("Need non-empty train and val records.")
-    if use_excel or use_csv:
-        print(f"Excel/CSV split stratify label: {args.excel_split_label}")
-        for split_name, rows in [("train", train_rows), ("val", val_rows), ("test", test_rows)]:
-            print(f"{split_name} label distribution: {label_distribution(rows, 'label_name')}")
+    for split_name, rows in [("train", train_rows), ("val", val_rows), ("test", test_rows)]:
+        print(f"{split_name} label distribution: {label_distribution(rows, 'label_name')}")
     device = get_device(args.cpu)
     tokenizer_source = args.init_checkpoint if args.init_checkpoint and Path(args.init_checkpoint).exists() else args.model
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_source, use_fast=False)
@@ -385,88 +306,88 @@ def main():
                     threshold=args.threshold,
                 )
 
-    with open(out / "training_history.csv", "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=list(history[0].keys()))
-        writer.writeheader()
-        writer.writerows(history)
+    if history:
+        with open(out / "training_history.csv", "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=list(history[0].keys()))
+            writer.writeheader()
+            writer.writerows(history)
     save_records(out / "dataset_records.csv", records)
 
-    if use_custom_classifier:
-        eval_model = PhoBERTClassifier(
-            args.model,
-            num_labels=len(labels),
-            pooling=args.pooling,
-        )
-        resolve_max_len(eval_model, max_len)
-        eval_model.load_state_dict(torch.load(best_dir / "model.pt", map_location="cpu"))
-        eval_model = to_device(eval_model, device, not args.no_mgpu)
-    else:
-        eval_model = to_device(AutoModelForSequenceClassification.from_pretrained(best_dir), device, not args.no_mgpu)
-    all_metrics = {}
-    eval_loaders = [("val", val_loader), ("test", test_loader)]
-    extra_eval_records = {}
-    for spec in args.eval_data:
-        eval_name, eval_data = parse_eval_data_spec(spec)
-        eval_format = infer_input_format(eval_data, args.eval_format)
-        eval_records, eval_skipped, _ = collect_records_for_args(
-            args,
-            labels,
-            label_to_id,
-            data=eval_data,
-            input_format=eval_format,
-            split_strategy=args.eval_split_strategy,
-            eval_split_name="eval",
-        )
-        if eval_skipped:
-            (out / f"skipped_{eval_name}_files.txt").write_text("\n".join(eval_skipped), encoding="utf-8")
-        wanted_splits = [item.strip() for item in args.eval_splits.split(",") if item.strip()]
-        for split_name in wanted_splits:
-            rows = split_records(eval_records, split_name)
-            if not rows:
-                continue
-            extra_eval_records[f"{eval_name}_{split_name}"] = rows
-            eval_loaders.append(
-                (
-                    f"{eval_name}_{split_name}",
-                    DataLoader(TextDataset(rows, tokenizer, max_len), batch_size=args.batch, shuffle=False, num_workers=args.workers, pin_memory=device.type == "cuda"),
-                )
+    if args.epochs > 0:
+        if use_custom_classifier:
+            eval_model = PhoBERTClassifier(
+                args.model,
+                num_labels=len(labels),
+                pooling=args.pooling,
             )
-    if extra_eval_records:
-        print("Extra evaluation splits:")
-        for split_name, rows in extra_eval_records.items():
-            print(f"{split_name}: {len(rows)}")
-    for split, loader in eval_loaders:
-        if loader is None:
-            continue
-        eval_result = eval_text(
-            eval_model,
-            loader,
-            device,
-            args.threshold,
-            label_names=labels,
-            binary_positive_label=args.binary_positive_label,
-        )
-        metrics, ids, y, p, pred = eval_result
-        all_metrics[split] = round_metrics(metrics)
-        save_preds(
-            out / f"{split}_predictions_best_auc.csv",
-            ids,
-            y,
-            p,
-            pred,
-            "id",
-            label_names=labels,
-            binary_positive_label=args.binary_positive_label,
-            threshold=args.threshold,
-        )
-        print(format_metrics_summary(split, all_metrics[split]))
-    metrics_payload = {
-        **all_metrics,
-        "model_config": model_config_metadata(args),
-    }
-    with open(out / "metrics.json", "w", encoding="utf-8") as f:
-        json.dump(metrics_payload, f, ensure_ascii=False, indent=2)
-    print(f"Saved full metrics to {out / 'metrics.json'}")
+            resolve_max_len(eval_model, max_len)
+            eval_model.load_state_dict(torch.load(best_dir / "model.pt", map_location="cpu"))
+            eval_model = to_device(eval_model, device, not args.no_mgpu)
+        else:
+            eval_model = to_device(AutoModelForSequenceClassification.from_pretrained(best_dir), device, not args.no_mgpu)
+        all_metrics = {}
+        eval_loaders = [("val", val_loader), ("test", test_loader)]
+        extra_eval_records = {}
+        for spec in args.eval_data:
+            eval_name, eval_data = parse_eval_data_spec(spec)
+            eval_records, eval_skipped, _ = collect_records_for_args(
+                args,
+                labels,
+                label_to_id,
+                data=eval_data,
+                split_strategy=args.eval_split_strategy,
+                eval_split_name="eval",
+            )
+            if eval_skipped:
+                (out / f"skipped_{eval_name}_files.txt").write_text("\n".join(eval_skipped), encoding="utf-8")
+            wanted_splits = [item.strip() for item in args.eval_splits.split(",") if item.strip()]
+            for split_name in wanted_splits:
+                rows = split_records(eval_records, split_name)
+                if not rows:
+                    continue
+                extra_eval_records[f"{eval_name}_{split_name}"] = rows
+                eval_loaders.append(
+                    (
+                        f"{eval_name}_{split_name}",
+                        DataLoader(TextDataset(rows, tokenizer, max_len), batch_size=args.batch, shuffle=False, num_workers=args.workers, pin_memory=device.type == "cuda"),
+                    )
+                )
+        if extra_eval_records:
+            print("Extra evaluation splits:")
+            for split_name, rows in extra_eval_records.items():
+                print(f"{split_name}: {len(rows)}")
+        for split, loader in eval_loaders:
+            if loader is None:
+                continue
+            eval_result = eval_text(
+                eval_model,
+                loader,
+                device,
+                args.threshold,
+                label_names=labels,
+                binary_positive_label=args.binary_positive_label,
+            )
+            metrics, ids, y, p, pred = eval_result
+            all_metrics[split] = round_metrics(metrics)
+            save_preds(
+                out / f"{split}_predictions_best_auc.csv",
+                ids,
+                y,
+                p,
+                pred,
+                "id",
+                label_names=labels,
+                binary_positive_label=args.binary_positive_label,
+                threshold=args.threshold,
+            )
+            print(format_metrics_summary(split, all_metrics[split]))
+        metrics_payload = {
+            **all_metrics,
+            "model_config": model_config_metadata(args),
+        }
+        with open(out / "metrics.json", "w", encoding="utf-8") as f:
+            json.dump(metrics_payload, f, ensure_ascii=False, indent=2)
+        print(f"Saved full metrics to {out / 'metrics.json'}")
 
 
 if __name__ == "__main__":
