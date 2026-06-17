@@ -78,10 +78,22 @@ def make_stratified_folds(cases, n_folds=5, seed=42):
     return assigned_cases
 
 
-def get_splits_for_fold(cases, fold_index, n_folds=5):
+def get_splits_for_fold(cases, fold_index, n_folds=5, val_ratio=0.1, seed=42):
+    from sklearn.model_selection import train_test_split
+    
     test_rows = [c for c in cases if c["fold"] == fold_index]
-    val_rows = [c for c in cases if c["fold"] == (fold_index + 1) % n_folds]
-    train_rows = [c for c in cases if c["fold"] not in (fold_index, (fold_index + 1) % n_folds)]
+    train_val_rows = [c for c in cases if c["fold"] != fold_index]
+    
+    test_ratio = 1.0 / n_folds
+    val_ratio_within_train_val = val_ratio / (1.0 - test_ratio)
+    
+    y = [c["label"] for c in train_val_rows]
+    train_rows, val_rows = train_test_split(
+        train_val_rows,
+        test_size=val_ratio_within_train_val,
+        random_state=seed + fold_index,
+        stratify=y
+    )
     return train_rows, val_rows, test_rows
 
 
@@ -355,7 +367,7 @@ def main():
     if not cases:
         raise ValueError(f"No MRI cases discovered under {args.image_root}")
     cases_with_folds = make_stratified_folds(cases, n_folds=5, seed=args.seed)
-    train_rows, val_rows, test_rows = get_splits_for_fold(cases_with_folds, args.fold_index, n_folds=5)
+    train_rows, val_rows, test_rows = get_splits_for_fold(cases_with_folds, args.fold_index, n_folds=5, seed=args.seed)
 
     print(f"Discovered {len(cases)} MRI cases total in {args.image_root}")
     print(f"Fold {args.fold_index} split sizes: Train={len(train_rows)}, Val={len(val_rows)}, Test={len(test_rows)}")
@@ -403,21 +415,22 @@ def main():
             best_val = val_metrics["f1"]
             torch.save({"model": model.state_dict(), "args": vars(args), "labels": LABELS}, best_path)
 
-    checkpoint = torch.load(best_path, map_location=device)
-    model.load_state_dict(checkpoint["model"])
-    final = {"fold": args.fold_index, "device": str(device), "labels": LABELS, "history": history}
-    for split in ["train", "val", "test"]:
-        metrics, predictions = evaluate(model, loaders[split], criterion, device, args.precision)
-        final[split] = metrics
-        write_predictions(out / f"predictions_{split}.csv", predictions)
-        print(
-            f"{split}: loss={metrics['loss']:.4f} acc={metrics['accuracy']:.4f} "
-            f"f1={metrics['f1']:.4f} auc={metrics.get('auc', 0.0):.4f} "
-            f"brier={metrics.get('brier_score', 0.0):.4f} ece={metrics.get('ece', 0.0):.4f}"
-        )
-    with (out / "metrics.json").open("w", encoding="utf-8") as handle:
-        json.dump(final, handle, ensure_ascii=False, indent=2)
-    print(f"wrote {out / 'metrics.json'}")
+    if args.epochs > 0:
+        checkpoint = torch.load(best_path, map_location=device)
+        model.load_state_dict(checkpoint["model"])
+        final = {"fold": args.fold_index, "device": str(device), "labels": LABELS, "history": history}
+        for split in ["train", "val", "test"]:
+            metrics, predictions = evaluate(model, loaders[split], criterion, device, args.precision)
+            final[split] = metrics
+            write_predictions(out / f"predictions_{split}.csv", predictions)
+            print(
+                f"{split}: loss={metrics['loss']:.4f} acc={metrics['accuracy']:.4f} "
+                f"f1={metrics['f1']:.4f} auc={metrics.get('auc', 0.0):.4f} "
+                f"brier={metrics.get('brier_score', 0.0):.4f} ece={metrics.get('ece', 0.0):.4f}"
+            )
+        with (out / "metrics.json").open("w", encoding="utf-8") as handle:
+            json.dump(final, handle, ensure_ascii=False, indent=2)
+        print(f"wrote {out / 'metrics.json'}")
 
 
 if __name__ == "__main__":
