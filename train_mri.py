@@ -71,12 +71,12 @@ def discover_mri_cases(image_root):
             for case_dir in root.iterdir():
                 if case_dir.is_dir() and case_dir.name.isdigit():
                     stt_val = int(case_dir.name)
-                    # 700_co has STT 1-700
-                    # 700_khong has STT 701-1400
-                    if 1 <= stt_val <= 700:
+                    # 700_co has STT 1-697 after duplicate cleanup
+                    # 700_khong has STT 698-1377 after duplicate cleanup
+                    if 1 <= stt_val <= 697:
                         class_name = "co"
                         label_val = 1
-                    elif 701 <= stt_val <= 1400:
+                    elif 698 <= stt_val <= 1377:
                         class_name = "khong"
                         label_val = 0
                     else:
@@ -123,7 +123,7 @@ def get_splits_for_fold(cases, fold_index, n_folds=5):
 
 
 DEFAULT_KAGGLE_MRI_ROOT = "/kaggle/input/datasets/duongbui/siscth/images"
-mri_root_default = DEFAULT_KAGGLE_MRI_ROOT if Path(DEFAULT_KAGGLE_MRI_ROOT).exists() else "images"
+mri_root_default = DEFAULT_KAGGLE_MRI_ROOT if Path(DEFAULT_KAGGLE_MRI_ROOT).exists() else "data/images"
 
 
 def parse_args():
@@ -450,7 +450,8 @@ def main():
         history.append(entry)
         print(
             f"epoch={epoch} train_loss={train_loss:.4f} "
-            f"val_f1={val_metrics['f1']:.4f} val_accuracy={val_metrics['accuracy']:.4f}"
+            f"val_f1={val_metrics['f1']:.4f} val_accuracy={val_metrics['accuracy']:.4f} "
+            f"val_brier={val_metrics.get('brier_score', 0.0):.4f} val_ece={val_metrics.get('ece', 0.0):.4f}"
         )
         if val_metrics["f1"] > best_val:
             best_val = val_metrics["f1"]
@@ -463,6 +464,11 @@ def main():
         metrics, predictions = evaluate(model, loaders[split], criterion, device, args.precision)
         final[split] = metrics
         write_predictions(out / f"predictions_{split}.csv", predictions)
+        print(
+            f"{split}: loss={metrics['loss']:.4f} acc={metrics['accuracy']:.4f} "
+            f"f1={metrics['f1']:.4f} auc={metrics.get('auc', 0.0):.4f} "
+            f"brier={metrics.get('brier_score', 0.0):.4f} ece={metrics.get('ece', 0.0):.4f}"
+        )
     with (out / "metrics.json").open("w", encoding="utf-8") as handle:
         json.dump(final, handle, ensure_ascii=False, indent=2)
     print(f"wrote {out / 'metrics.json'}")

@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 DEFAULT_KAGGLE_MRI_ROOT = "/kaggle/input/datasets/duongbui/siscth/images"
-mri_root_default = DEFAULT_KAGGLE_MRI_ROOT if Path(DEFAULT_KAGGLE_MRI_ROOT).exists() else "images"
+mri_root_default = DEFAULT_KAGGLE_MRI_ROOT if Path(DEFAULT_KAGGLE_MRI_ROOT).exists() else "data/images"
 
 
 def parse_args():

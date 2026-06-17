@@ -21,11 +21,14 @@ from utils.text_data import (
     collect_excel_text,
     collect_large_text,
     collect_processed_csv_text,
+    collect_raw_csv_text,
     discover_excel_labels,
     discover_processed_csv_labels,
+    discover_raw_csv_labels,
     discover_text_labels,
     is_excel_data,
     is_processed_csv_data,
+    is_raw_csv_data,
     make_label_maps,
     parse_labels_arg,
     save_records,
@@ -35,10 +38,10 @@ from utils.text_train import PhoBERTClassifier, ce_epoch, eval_text
 
 def parse_args():
     p = argparse.ArgumentParser(description="Train text-only PhoBERT on large text files.")
-    p.add_argument("--data", default="/kaggle/input/datasets/duongb/cthsis/data/texts")
+    p.add_argument("--data", default="/kaggle/input/datasets/duongbui/siscth/large.csv")
     p.add_argument("--out", default="/kaggle/working/text_phobert_classifier")
     p.add_argument("--model", default="vinai/phobert-base")
-    p.add_argument("--format", choices=["auto", "text", "excel", "processed"], default="auto", help="Input format. processed accepts CSV files with Input_Text and Label columns.")
+    p.add_argument("--format", choices=["auto", "text", "excel", "processed", "csv"], default="auto", help="Input format. processed accepts CSV files with Input_Text and Label columns. csv accepts raw CSV files with clinical fields.")
     p.add_argument("--excel-task", choices=["binary"], default="binary", help="For Excel input, train on co/khong binary targets.")
     p.add_argument("--val-ratio", type=float, default=0.1, help="Validation ratio for unsplit Excel input.")
     p.add_argument("--test-ratio", type=float, default=0.1, help="Test ratio for unsplit Excel input.")
@@ -158,6 +161,8 @@ def infer_input_format(data, requested):
         return "excel"
     if is_processed_csv_data(data):
         return "processed"
+    if is_raw_csv_data(data):
+        return "csv"
     return "text"
 
 
@@ -181,6 +186,19 @@ def collect_records_for_args(args, labels, label_to_id, data=None, input_format=
         )
     if input_format == "processed":
         return collect_processed_csv_text(
+            data,
+            labels=labels,
+            label_to_id=label_to_id,
+            seed=args.seed,
+            val_ratio=args.val_ratio,
+            test_ratio=args.test_ratio,
+            split_strategy=split_strategy,
+            n_folds=args.n_folds,
+            fold_index=args.fold_index,
+            eval_split_name=eval_split_name,
+        )
+    if input_format == "csv":
+        return collect_raw_csv_text(
             data,
             labels=labels,
             label_to_id=label_to_id,
@@ -223,12 +241,17 @@ def main():
     input_format = infer_input_format(args.data, args.format)
     use_excel = input_format == "excel"
     use_processed = input_format == "processed"
+    use_csv = input_format == "csv"
     if use_excel:
         labels = parse_labels_arg(args.labels) or discover_excel_labels(args.data, task="binary")
         if args.binary_positive_label is None:
             args.binary_positive_label = "co"
     elif use_processed:
         labels = parse_labels_arg(args.labels) or discover_processed_csv_labels(args.data)
+        if args.binary_positive_label is None:
+            args.binary_positive_label = "co"
+    elif use_csv:
+        labels = parse_labels_arg(args.labels) or discover_raw_csv_labels(args.data)
         if args.binary_positive_label is None:
             args.binary_positive_label = "co"
     else:
@@ -245,8 +268,8 @@ def main():
     train_rows, val_rows, test_rows = [split_records(records, s) for s in ("train", "val", "test")]
     if not train_rows or not val_rows:
         raise RuntimeError("Need non-empty train and val records.")
-    if use_excel:
-        print(f"Excel split stratify label: {args.excel_split_label}")
+    if use_excel or use_csv:
+        print(f"Excel/CSV split stratify label: {args.excel_split_label}")
         for split_name, rows in [("train", train_rows), ("val", val_rows), ("test", test_rows)]:
             print(f"{split_name} label distribution: {label_distribution(rows, 'label_name')}")
     device = get_device(args.cpu)
